@@ -9,7 +9,7 @@ import asyncio
 
 from app.core.celery_app import celery_app
 from app.db.session import AsyncSessionLocal
-from app.models.submission import Submission, SubmissionStatus, ExamSession
+from app.models.submission import Submission, SubmissionStatus, ExamSession, SessionStatus
 from app.models.exam import Exam, TaskType, ExamStatus
 from app.services.ai_grading import grade_submission
 from app.services.storage import storage_service
