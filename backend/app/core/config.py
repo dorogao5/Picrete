@@ -1,7 +1,59 @@
+import os
+from pathlib import Path
 from typing import List, Union
-from pydantic import field_validator, PostgresDsn
+from pydantic import Field, field_validator, PostgresDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import secrets
+
+
+_SECRET_FILE_PATH = Path(__file__).resolve().parents[2] / ".secret_key"
+
+
+def _load_or_create_secret_key() -> str:
+    """
+    Ensure all application processes share the same SECRET_KEY even when the
+    environment variable is not provided (e.g. multiple gunicorn workers).
+
+    Strategy:
+      1. If a persistent secret file exists, reuse it.
+      2. Otherwise, atomically create the file with a freshly generated key.
+      3. As a last resort (e.g. read-only filesystem), fall back to an
+         in-memory key so the application can still start, while logging.
+    """
+    # Reuse existing secret if present
+    try:
+        if _SECRET_FILE_PATH.exists():
+            value = _SECRET_FILE_PATH.read_text().strip()
+            if value:
+                return value
+    except OSError:
+        # If we fail to read the file, fall back to generating a new key
+        pass
+
+    new_key = secrets.token_urlsafe(64)
+
+    # Attempt to atomically create the file so concurrent workers don't race
+    try:
+        _SECRET_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(_SECRET_FILE_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as file:
+            file.write(new_key)
+        return new_key
+    except FileExistsError:
+        # Another worker wrote the key first; read and use it
+        try:
+            value = _SECRET_FILE_PATH.read_text().strip()
+            if value:
+                return value
+        except OSError:
+            pass
+    except OSError:
+        # Filesystem might be read-only; fall back to in-memory key
+        pass
+
+    # Fallback: use generated key (workers without shared storage fall back here,
+    # but we still return a deterministic value within the process)
+    return new_key
 
 
 class Settings(BaseSettings):
@@ -19,7 +71,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # Security
-    SECRET_KEY: str = secrets.token_urlsafe(32)
+    SECRET_KEY: str = Field(default_factory=_load_or_create_secret_key)
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     ALGORITHM: str = "HS256"
     
