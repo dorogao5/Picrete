@@ -43,20 +43,27 @@ const Signup = () => {
       
       const { access_token, user } = response.data;
       
+      // Сохраняем токен и пользователя
       setAuthToken(access_token);
       setUser(user);
       
+      // Убеждаемся, что токен действительно записался
+      const savedToken = localStorage.getItem('access_token');
+      if (!savedToken || savedToken !== access_token) {
+        throw new Error('Не удалось сохранить токен авторизации');
+      }
+      
+      setLoading(false);
       toast.success("Регистрация успешна");
       
-      // Redirect based on role
+      // Навигация происходит после сохранения токена
       if (user.role === "teacher" || user.role === "admin") {
-        navigate("/teacher");
+        navigate("/teacher", { replace: true });
       } else {
-        navigate("/student");
+        navigate("/student", { replace: true });
       }
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || "Ошибка регистрации");
-    } finally {
+      toast.error(error.response?.data?.detail || error.message || "Ошибка регистрации");
       setLoading(false);
     }
   };

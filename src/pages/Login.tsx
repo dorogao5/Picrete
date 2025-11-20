@@ -23,20 +23,27 @@ const Login = () => {
       const response = await authAPI.login({ isu, password });
       const { access_token, user } = response.data;
       
+      // Сохраняем токен и пользователя
       setAuthToken(access_token);
       setUser(user);
       
+      // Убеждаемся, что токен действительно записался
+      const savedToken = localStorage.getItem('access_token');
+      if (!savedToken || savedToken !== access_token) {
+        throw new Error('Не удалось сохранить токен авторизации');
+      }
+      
+      setLoading(false);
       toast.success("Вход выполнен успешно");
       
-      // Redirect based on role
+
       if (user.role === "teacher" || user.role === "admin") {
-        navigate("/teacher");
+        navigate("/teacher", { replace: true });
       } else {
-        navigate("/student");
+        navigate("/student", { replace: true });
       }
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || "Ошибка входа");
-    } finally {
+      toast.error(error.response?.data?.detail || error.message || "Ошибка входа");
       setLoading(false);
     }
   };
