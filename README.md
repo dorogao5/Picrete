@@ -209,13 +209,6 @@ docker compose -f docker-compose.prod.yml build
 docker-compose -f docker-compose.prod.yml up -d
 ```
 
-
-## 📝 API Документация
-
-После запуска backend, API документация доступна по адресу:
-- Swagger UI: `http://localhost:8000/api/v1/docs`
-- ReDoc: `http://localhost:8000/api/v1/redoc`
-
 ## 🔐 Безопасность
 
 - JWT токены для аутентификации
