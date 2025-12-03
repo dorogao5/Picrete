@@ -2,39 +2,10 @@
 # Project-specific files
 # ============================================
 DEPLOYMENT_COMMANDS.md
+DEPLOYMENT_BACKEND.md
 env.production
 *.local
 *.local.*
-
-# ============================================
-# Node.js / Frontend
-# ============================================
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-.pnpm-debug.log*
-
-# Build outputs
-dist/
-dist-ssr/
-build/
-*.local
-
-# Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env.production
-
-# Vite
-.vite/
-vite.config.js.timestamp-*
-vite.config.ts.timestamp-*
 
 # ============================================
 # Python / Backend
@@ -139,9 +110,8 @@ __pypackages__/
 celerybeat-schedule
 celerybeat.pid
 
-# Database migrations
-backend/migrations/
-migrations/
+# Database migrations (ignore if auto-generated, uncomment if manual)
+# migrations/
 
 # SageMath parsed files
 *.sage.py
@@ -158,6 +128,7 @@ backend/.env
 backend/.env.*
 backend/env/
 backend/venv/
+.secret_key
 
 # Spyder project settings
 .spyderproject
@@ -274,11 +245,6 @@ docker-compose.override.yml
 # ============================================
 logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
 backend/logs/
 *.log.*
 
@@ -318,26 +284,4 @@ secrets/
 # Testing
 # ============================================
 .coverage
-.nyc_output
-coverage/
-*.lcov
 test-results/
-playwright-report/
-playwright/.cache/
-
-# ============================================
-# Misc
-# ============================================
-*.zip
-*.tar.gz
-*.rar
-*.7z
-.sass-cache/
-.parcel-cache/
-.next/
-.nuxt/
-.output/
-.vercel/
-.turbo/
-.astro/
-
