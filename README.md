@@ -177,4 +177,4 @@ Frontend репозиторий: https://github.com/dorogao5/Front-Picrete
 
 ## Лицензия
 
-Copyright (c) 2024
+Copyright (c) 2025
