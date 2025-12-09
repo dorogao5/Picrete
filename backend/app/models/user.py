@@ -25,6 +25,12 @@ class User(Base):
     role = Column(SQLEnum(UserRole), nullable=False, default=UserRole.STUDENT)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
+    pd_consent = Column(Boolean, nullable=False, default=False)
+    pd_consent_at = Column(DateTime, nullable=True)
+    pd_consent_version = Column(String, nullable=True)
+    terms_accepted_at = Column(DateTime, nullable=True)
+    terms_version = Column(String, nullable=True)
+    privacy_version = Column(String, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

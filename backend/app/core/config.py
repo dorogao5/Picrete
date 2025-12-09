@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Picrete API"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
+    TERMS_VERSION: str = "2025-12-09"
+    PRIVACY_VERSION: str = "2025-12-09"
+    PD_CONSENT_VERSION: str = "2025-12-09"
     
     # Security
     SECRET_KEY: str = Field(default_factory=_load_or_create_secret_key)
@@ -157,9 +160,9 @@ class Settings(BaseSettings):
     AUTO_SAVE_INTERVAL_SECONDS: int = 10
     PRESIGNED_URL_EXPIRE_MINUTES: int = 5
     
-    # Default admin credentials
+    # Default admin credentials (set via environment to avoid hardcoding secrets)
     FIRST_SUPERUSER_ISU: str = "000000"
-    FIRST_SUPERUSER_PASSWORD: str = ""  # Set via .env file
+    FIRST_SUPERUSER_PASSWORD: str = ""  # Set in .env
 
 
 settings = Settings()

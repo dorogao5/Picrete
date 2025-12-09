@@ -3,11 +3,13 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import uuid
+from datetime import datetime
 
 from app.api.deps import get_db, get_current_user
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.models.user import User
 from app.schemas.user import UserCreate, UserLogin, Token, User as UserSchema
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -18,6 +20,12 @@ async def signup(
     db: AsyncSession = Depends(get_db)
 ):
     """Register a new user"""
+    if not user_in.pd_consent:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Personal data consent is required"
+        )
+    
     # Check if user with ISU already exists
     result = await db.execute(select(User).where(User.isu == user_in.isu))
     if result.scalar_one_or_none():
@@ -33,8 +41,14 @@ async def signup(
         full_name=user_in.full_name,
         hashed_password=get_password_hash(user_in.password),
         role=user_in.role,
-        is_active=True,
-        is_verified=False,
+        is_active=user_in.is_active,
+        is_verified=user_in.is_verified,
+        pd_consent=True,
+        pd_consent_at=datetime.utcnow(),
+        pd_consent_version=user_in.pd_consent_version or settings.PD_CONSENT_VERSION,
+        terms_accepted_at=datetime.utcnow(),
+        terms_version=user_in.terms_version or settings.TERMS_VERSION,
+        privacy_version=user_in.privacy_version or settings.PRIVACY_VERSION,
     )
     
     db.add(user)

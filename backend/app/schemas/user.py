@@ -14,6 +14,12 @@ class UserCreate(UserBase):
     """Schema for creating a user"""
     password: str = Field(..., min_length=6, max_length=128)
     role: UserRole = UserRole.STUDENT
+    is_active: bool = True
+    is_verified: bool = False
+    pd_consent: bool = False
+    pd_consent_version: Optional[str] = None
+    terms_version: Optional[str] = None
+    privacy_version: Optional[str] = None
 
 
 class UserLogin(BaseModel):
@@ -29,6 +35,12 @@ class User(UserBase):
     is_active: bool
     is_verified: bool
     created_at: datetime
+    pd_consent: bool
+    pd_consent_at: Optional[datetime] = None
+    pd_consent_version: Optional[str] = None
+    terms_accepted_at: Optional[datetime] = None
+    terms_version: Optional[str] = None
+    privacy_version: Optional[str] = None
     
     # Serialize datetime fields as UTC with 'Z' suffix
     @field_serializer('created_at')
@@ -55,5 +67,22 @@ class UserUpdate(BaseModel):
     """Schema for updating user"""
     full_name: Optional[str] = None
     password: Optional[str] = Field(None, min_length=6, max_length=128)
+
+
+class AdminUserCreate(UserBase):
+    """Schema for admin-created user"""
+    password: str = Field(..., min_length=6, max_length=128)
+    role: UserRole = UserRole.STUDENT
+    is_active: bool = True
+    is_verified: bool = False
+
+
+class AdminUserUpdate(BaseModel):
+    """Schema for admin updating user"""
+    full_name: Optional[str] = None
+    password: Optional[str] = Field(None, min_length=6, max_length=128)
+    role: Optional[UserRole] = None
+    is_active: Optional[bool] = None
+    is_verified: Optional[bool] = None
 
 

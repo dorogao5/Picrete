@@ -4,10 +4,17 @@ from contextlib import asynccontextmanager
 import logging
 
 from app.api.v1.api import api_router
+import uuid
+
+from sqlalchemy import select
+
 from app.core.config import settings
 from app.db.session import engine
 from app.db.base import Base
 from app.core.redis_client import redis_client
+from app.db.session import AsyncSessionLocal
+from app.models.user import User, UserRole
+from app.core.security import get_password_hash, verify_password
 
 # Configure logging
 logging.basicConfig(
@@ -46,6 +53,63 @@ async def lifespan(app: FastAPI):
         else:
             logger.error(f"Failed to create database tables: {e}")
             raise
+
+    # Ensure default admin exists
+    async def ensure_initial_superuser():
+        if not settings.FIRST_SUPERUSER_ISU or not settings.FIRST_SUPERUSER_PASSWORD:
+            logger.warning("FIRST_SUPERUSER_* not configured; skipping superuser creation")
+            return
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(User).where(User.isu == settings.FIRST_SUPERUSER_ISU)
+            )
+            user = result.scalar_one_or_none()
+            desired_hash = get_password_hash(settings.FIRST_SUPERUSER_PASSWORD)
+
+            if user:
+                needs_update = False
+
+                if not verify_password(settings.FIRST_SUPERUSER_PASSWORD, user.hashed_password):
+                    user.hashed_password = desired_hash
+                    needs_update = True
+
+                if user.role != UserRole.ADMIN:
+                    user.role = UserRole.ADMIN
+                    needs_update = True
+
+                if not user.is_active:
+                    user.is_active = True
+                    needs_update = True
+
+                if not user.is_verified:
+                    user.is_verified = True
+                    needs_update = True
+
+                if needs_update:
+                    await session.commit()
+                    await session.refresh(user)
+                    logger.info("Updated default superuser 000000")
+                else:
+                    logger.info("Default superuser already up to date")
+            else:
+                superuser = User(
+                    id=str(uuid.uuid4()),
+                    isu=settings.FIRST_SUPERUSER_ISU,
+                    full_name="Super Admin",
+                    hashed_password=desired_hash,
+                    role=UserRole.ADMIN,
+                    is_active=True,
+                    is_verified=True,
+                )
+                session.add(superuser)
+                await session.commit()
+                logger.info("Created default superuser 000000")
+
+    try:
+        await ensure_initial_superuser()
+    except Exception as e:
+        logger.error(f"Failed to ensure default superuser: {e}")
     
     yield
     
