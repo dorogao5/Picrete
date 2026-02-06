@@ -1,0 +1,12 @@
+[
+  {
+    "method": "GET",
+    "path": "/",
+    "headers": {}
+  },
+  {
+    "method": "GET",
+    "path": "/healthz",
+    "headers": {}
+  }
+]

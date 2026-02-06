@@ -2,55 +2,50 @@
 
 **Backend платформы автоматизированной проверки контрольных работ по химии с использованием искусственного интеллекта**
 
-Picrete Backend — это FastAPI приложение с AI логикой для автоматической проверки работ студентов. Система обеспечивает API для фронтенда и обрабатывает задачи проверки через Celery.
+Picrete Backend — это Rust API (Axum) с AI логикой для автоматической проверки работ студентов. Система обеспечивает API для фронтенда и обрабатывает задачи проверки через Redis и фоновый worker.
 Сервис доступен по адресу https://picrete.com
 
 ## Технологический стек
 
 ### Backend
-- **FastAPI** — асинхронный Python веб-фреймворк
-- **SQLAlchemy** (async) — ORM для работы с БД
+- **Axum** — асинхронный Rust веб-фреймворк
+- **SQLx** — асинхронная работа с PostgreSQL
 - **PostgreSQL** — реляционная база данных
 - **Redis** — кэширование и очереди задач
-- **Celery** — фоновые задачи (автоматическая проверка)
+- **Tokio** — асинхронная среда выполнения
 - **OpenAI API** — AI для проверки работ
-- **Yandex Object Storage** — хранение изображений решений
-- **Pillow** — обработка изображений
+- **Yandex Object Storage (S3)** — хранение изображений решений
 
 ### Инфраструктура
 - **Docker** — контейнеризация
 - **Nginx** — reverse proxy и статика
-- **Gunicorn** — WSGI сервер для production
 
 ## Структура проекта
 
 ```
-Picrete/
-├── backend/
-│   ├── app/
-│   │   ├── api/         # API эндпоинты
-│   │   ├── core/        # Конфигурация, безопасность
-│   │   ├── db/          # Подключение к БД
-│   │   ├── models/      # SQLAlchemy модели
-│   │   ├── schemas/     # Pydantic схемы
-│   │   ├── services/    # Бизнес-логика (AI grading, storage)
-│   │   └── tasks/       # Celery задачи
-│   ├── migrations/      # SQL миграции
-│   ├── main.py          # Точка входа FastAPI
-│   ├── Dockerfile       # Docker образ
-│   ├── docker-compose.prod.yml  # Docker Compose конфигурация
-│   ├── requirements.txt
-│   ├── setup-nginx.sh   # Скрипт настройки Nginx
-│   └── nginx-config-example.conf  # Пример конфигурации Nginx
-├── README.md
-└── DEPLOYMENT_BACKEND.md
+app/
+├── src/               # Исходный код
+│   ├── api/           # API эндпоинты
+│   ├── core/          # Конфигурация, безопасность
+│   ├── db/            # Подключение к БД
+│   ├── models/        # Модели данных
+│   ├── schemas/       # Схемы валидации
+│   ├── services/      # Бизнес-логика (AI grading, storage)
+│   └── tasks/         # Фоновые задачи (grading, scheduler)
+├── migrations/        # SQL миграции (SQLx)
+├── scripts/           # Вспомогательные скрипты
+├── tests/             # Тесты
+├── Dockerfile         # Docker образ
+├── docker-compose.prod.yml  # Docker Compose для production
+├── Cargo.toml
+└── README.md
 ```
 
 ## Быстрый старт
 
 ### Предварительные требования
 
-- Python 3.11+
+- Rust 1.88+ (или используйте rust-toolchain.toml)
 - PostgreSQL 14+
 - Redis 6+
 - Docker и Docker Compose (для production)
@@ -61,20 +56,12 @@ Picrete/
 
 ```bash
 git clone https://github.com/dorogao5/Picrete.git
-cd Picrete/backend
+cd Picrete/app
 ```
 
-2. **Настройка Backend**
+2. **Настройка переменных окружения**
 
-```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-3. **Настройка переменных окружения**
-
-Создайте файл `backend/.env`:
+Создайте файл `.env` в корне app:
 
 ```env
 # Database
@@ -105,31 +92,19 @@ S3_BUCKET=picrete-data-storage
 S3_REGION=ru-central1
 
 # CORS
-BACKEND_CORS_ORIGINS=["http://localhost:5173","http://localhost:3000","https://picrete.com"]
+BACKEND_CORS_ORIGINS=http://localhost:5173,http://localhost:3000,https://picrete.com,https://www.picrete.com
 ```
 
-4. **Инициализация базы данных**
+3. **Запуск приложения**
 
 ```bash
-# Создайте базу данных PostgreSQL
-createdb picrete_db
-
-# Применение миграций (при наличии) или автоматическое создание таблиц
-python -m uvicorn main:app --reload
+cargo run --bin picrete-rust
 ```
 
-5. **Запуск Celery Worker (для фоновых задач)**
+4. **Запуск worker (в отдельном терминале)**
 
 ```bash
-cd backend
-celery -A app.core.celery_app worker --loglevel=info
-```
-
-6. **Запуск приложения**
-
-```bash
-cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+cargo run --bin worker
 ```
 
 API будет доступно по адресу `http://localhost:8000`
@@ -139,7 +114,7 @@ API будет доступно по адресу `http://localhost:8000`
 Для production развертывания используйте Docker Compose:
 
 ```bash
-cd backend
+cd app
 docker compose -f docker-compose.prod.yml build
 docker compose -f docker-compose.prod.yml up -d
 ```
@@ -151,15 +126,6 @@ docker compose -f docker-compose.prod.yml up -d
 После запуска backend, API документация доступна по адресу:
 - Swagger UI: `http://localhost:8000/api/v1/docs`
 - ReDoc: `http://localhost:8000/api/v1/redoc`
-
-## Конфигурация
-
-Основные настройки находятся в `backend/app/core/config.py`. Ключевые параметры:
-
-- `AI_MODEL` — модель OpenAI для проверки (по умолчанию: gpt-5)
-- `MAX_UPLOAD_SIZE_MB` — максимальный размер загружаемого файла (10 MB)
-- `MAX_CONCURRENT_EXAMS` — максимальное количество одновременных экзаменов (150)
-- `AUTO_SAVE_INTERVAL_SECONDS` — интервал автосохранения (10 сек)
 
 ## Безопасность
 

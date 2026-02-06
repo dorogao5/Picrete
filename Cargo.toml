@@ -1,0 +1,36 @@
+[package]
+name = "picrete-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+async-trait = "0.1"
+axum = { version = "0.7", features = ["multipart"] }
+base64 = "0.22"
+dotenvy = "0.15"
+jsonwebtoken = "9"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.7.4", default-features = false, features = ["json", "macros", "migrate", "postgres", "runtime-tokio", "time", "uuid"] }
+thiserror = "1"
+time = { version = "0.3", features = ["macros", "serde"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors", "normalize-path", "request-id", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+metrics = "0.22"
+metrics-exporter-prometheus = "0.14"
+aws-config = "1"
+aws-credential-types = "1"
+aws-sdk-s3 = "1"
+hex = "0.4"
+sha2 = "0.10"
+
+[dev-dependencies]
+tower = "0.5"

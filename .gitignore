@@ -6,7 +6,11 @@ DEPLOYMENT_BACKEND.md
 env.production
 *.local
 *.local.*
-
+target/
+.env
+.secret_key
+*.rs.bk
+uploads/
 # ============================================
 # Python / Backend
 # ============================================

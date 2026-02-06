@@ -1,0 +1,291 @@
+#![allow(dead_code)]
+
+use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use time::{
+    format_description::well_known::Rfc3339, macros::format_description, OffsetDateTime,
+    PrimitiveDateTime,
+};
+
+use crate::db::types::{DifficultyLevel, ExamStatus};
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TaskVariantCreate {
+    pub(crate) content: String,
+    #[serde(default)]
+    pub(crate) parameters: serde_json::Value,
+    #[serde(default)]
+    #[serde(alias = "referenceSolution")]
+    pub(crate) reference_solution: Option<String>,
+    #[serde(default)]
+    #[serde(alias = "referenceAnswer")]
+    pub(crate) reference_answer: Option<String>,
+    #[serde(default = "default_tolerance")]
+    #[serde(alias = "answerTolerance")]
+    pub(crate) answer_tolerance: f64,
+    #[serde(default)]
+    pub(crate) attachments: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskVariantResponse {
+    pub(crate) id: String,
+    pub(crate) task_type_id: String,
+    pub(crate) content: String,
+    pub(crate) parameters: serde_json::Value,
+    pub(crate) reference_solution: Option<String>,
+    pub(crate) reference_answer: Option<String>,
+    pub(crate) answer_tolerance: f64,
+    pub(crate) attachments: Vec<String>,
+    pub(crate) created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TaskTypeCreate {
+    pub(crate) title: String,
+    pub(crate) description: String,
+    #[serde(alias = "orderIndex")]
+    pub(crate) order_index: i32,
+    #[serde(alias = "maxScore")]
+    pub(crate) max_score: f64,
+    pub(crate) rubric: serde_json::Value,
+    #[serde(default = "default_difficulty")]
+    pub(crate) difficulty: DifficultyLevel,
+    #[serde(default)]
+    #[serde(alias = "taxonomyTags")]
+    pub(crate) taxonomy_tags: Vec<String>,
+    #[serde(default)]
+    pub(crate) formulas: Vec<String>,
+    #[serde(default)]
+    pub(crate) units: Vec<serde_json::Value>,
+    #[serde(default)]
+    #[serde(alias = "validationRules")]
+    pub(crate) validation_rules: serde_json::Value,
+    #[serde(default)]
+    pub(crate) variants: Vec<TaskVariantCreate>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskTypeResponse {
+    pub(crate) id: String,
+    pub(crate) exam_id: String,
+    pub(crate) title: String,
+    pub(crate) description: String,
+    pub(crate) order_index: i32,
+    pub(crate) max_score: f64,
+    pub(crate) rubric: serde_json::Value,
+    pub(crate) difficulty: DifficultyLevel,
+    pub(crate) taxonomy_tags: Vec<String>,
+    pub(crate) formulas: Vec<String>,
+    pub(crate) units: Vec<serde_json::Value>,
+    pub(crate) validation_rules: serde_json::Value,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) variants: Vec<TaskVariantResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ExamCreate {
+    pub(crate) title: String,
+    #[serde(default)]
+    pub(crate) description: Option<String>,
+    #[serde(alias = "startTime", deserialize_with = "deserialize_offset_datetime_flexible")]
+    pub(crate) start_time: OffsetDateTime,
+    #[serde(alias = "endTime", deserialize_with = "deserialize_offset_datetime_flexible")]
+    pub(crate) end_time: OffsetDateTime,
+    #[serde(alias = "durationMinutes")]
+    pub(crate) duration_minutes: i32,
+    #[serde(default = "default_timezone")]
+    pub(crate) timezone: String,
+    #[serde(default = "default_max_attempts")]
+    #[serde(alias = "maxAttempts")]
+    pub(crate) max_attempts: i32,
+    #[serde(default)]
+    #[serde(alias = "allowBreaks")]
+    pub(crate) allow_breaks: bool,
+    #[serde(default)]
+    #[serde(alias = "breakDurationMinutes")]
+    pub(crate) break_duration_minutes: i32,
+    #[serde(default = "default_auto_save_interval")]
+    #[serde(alias = "autoSaveInterval")]
+    pub(crate) auto_save_interval: i32,
+    #[serde(default)]
+    pub(crate) settings: serde_json::Value,
+    #[serde(default)]
+    #[serde(alias = "taskTypes")]
+    pub(crate) task_types: Vec<TaskTypeCreate>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ExamUpdate {
+    #[serde(default)]
+    pub(crate) title: Option<String>,
+    #[serde(default)]
+    pub(crate) description: Option<String>,
+    #[serde(
+        default,
+        alias = "startTime",
+        deserialize_with = "deserialize_option_offset_datetime_flexible"
+    )]
+    pub(crate) start_time: Option<OffsetDateTime>,
+    #[serde(
+        default,
+        alias = "endTime",
+        deserialize_with = "deserialize_option_offset_datetime_flexible"
+    )]
+    pub(crate) end_time: Option<OffsetDateTime>,
+    #[serde(default)]
+    #[serde(alias = "durationMinutes")]
+    pub(crate) duration_minutes: Option<i32>,
+    // Status is intentionally omitted — use dedicated /publish endpoint
+    #[serde(default)]
+    pub(crate) settings: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ExamResponse {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) description: Option<String>,
+    pub(crate) start_time: String,
+    pub(crate) end_time: String,
+    pub(crate) duration_minutes: i32,
+    pub(crate) timezone: String,
+    pub(crate) max_attempts: i32,
+    pub(crate) allow_breaks: bool,
+    pub(crate) break_duration_minutes: i32,
+    pub(crate) auto_save_interval: i32,
+    pub(crate) settings: serde_json::Value,
+    pub(crate) status: ExamStatus,
+    pub(crate) created_by: String,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) published_at: Option<String>,
+    pub(crate) task_types: Vec<TaskTypeResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ExamSummaryResponse {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) start_time: String,
+    pub(crate) end_time: String,
+    pub(crate) duration_minutes: i32,
+    pub(crate) status: ExamStatus,
+    pub(crate) task_count: i64,
+    pub(crate) student_count: i64,
+    pub(crate) pending_count: i64,
+}
+
+pub(crate) fn format_offset(value: OffsetDateTime) -> String {
+    value.format(&Rfc3339).unwrap_or_else(|_| value.to_string())
+}
+
+pub(crate) fn format_primitive(value: PrimitiveDateTime) -> String {
+    value.assume_utc().format(&Rfc3339).unwrap_or_else(|_| value.assume_utc().to_string())
+}
+
+fn default_tolerance() -> f64 {
+    0.01
+}
+
+fn default_difficulty() -> DifficultyLevel {
+    DifficultyLevel::Medium
+}
+
+fn default_timezone() -> String {
+    "Europe/Moscow".to_string()
+}
+
+fn default_max_attempts() -> i32 {
+    1
+}
+
+fn default_auto_save_interval() -> i32 {
+    10
+}
+
+fn parse_offset_datetime_flexible(raw: &str) -> Option<OffsetDateTime> {
+    if let Ok(value) = OffsetDateTime::parse(raw, &Rfc3339) {
+        return Some(value);
+    }
+
+    // Frontend's datetime-local often sends without timezone.
+    if raw.len() == 16 && raw.as_bytes().get(10) == Some(&b'T') {
+        let candidate = format!("{raw}:00Z");
+        if let Ok(value) = OffsetDateTime::parse(&candidate, &Rfc3339) {
+            return Some(value);
+        }
+    }
+
+    if raw.len() == 19 && raw.as_bytes().get(10) == Some(&b'T') {
+        let candidate = format!("{raw}Z");
+        if let Ok(value) = OffsetDateTime::parse(&candidate, &Rfc3339) {
+            return Some(value);
+        }
+    }
+
+    // Fallback for explicit format "YYYY-MM-DDTHH:MM[:SS]"
+    if let Ok(value) = PrimitiveDateTime::parse(
+        raw,
+        &format_description!("[year]-[month]-[day]T[hour]:[minute]"),
+    ) {
+        return Some(value.assume_utc());
+    }
+    if let Ok(value) = PrimitiveDateTime::parse(
+        raw,
+        &format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]"),
+    ) {
+        return Some(value.assume_utc());
+    }
+
+    None
+}
+
+fn deserialize_offset_datetime_flexible<'de, D>(deserializer: D) -> Result<OffsetDateTime, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    parse_offset_datetime_flexible(&raw)
+        .ok_or_else(|| D::Error::custom(format!("invalid datetime: {raw}")))
+}
+
+fn deserialize_option_offset_datetime_flexible<'de, D>(
+    deserializer: D,
+) -> Result<Option<OffsetDateTime>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    match raw {
+        Some(value) => parse_offset_datetime_flexible(&value)
+            .ok_or_else(|| D::Error::custom(format!("invalid datetime: {value}")))
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::{Date, Time, UtcOffset};
+
+    #[test]
+    fn format_primitive_outputs_utc_z() {
+        let date = Date::from_calendar_date(2025, time::Month::January, 2).unwrap();
+        let time = Time::from_hms(10, 20, 30).unwrap();
+        let value = PrimitiveDateTime::new(date, time);
+        assert_eq!(format_primitive(value), "2025-01-02T10:20:30Z");
+    }
+
+    #[test]
+    fn format_offset_preserves_offset() {
+        let date = Date::from_calendar_date(2025, time::Month::January, 2).unwrap();
+        let time = Time::from_hms(10, 20, 30).unwrap();
+        let utc = PrimitiveDateTime::new(date, time).assume_utc();
+        let offset = UtcOffset::from_hms(3, 0, 0).unwrap();
+        let shifted = utc.to_offset(offset);
+        assert_eq!(format_offset(shifted), "2025-01-02T13:20:30+03:00");
+    }
+}
