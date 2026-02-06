@@ -33,7 +33,6 @@ app/
 │   ├── services/      # Бизнес-логика (AI grading, storage)
 │   └── tasks/         # Фоновые задачи (grading, scheduler)
 ├── migrations/        # SQL миграции (SQLx)
-├── scripts/           # Вспомогательные скрипты
 ├── tests/             # Тесты
 ├── Dockerfile         # Docker образ
 ├── docker-compose.prod.yml  # Docker Compose для production
