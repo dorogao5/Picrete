@@ -1,145 +1,155 @@
 # Picrete Backend
 
-**Backend платформы автоматизированной проверки контрольных работ по химии с использованием искусственного интеллекта**
+Backend платформы автоматизированной проверки контрольных работ по химии с использованием ИИ.
 
-Picrete Backend — это Rust API (Axum) с AI логикой для автоматической проверки работ студентов. Система обеспечивает API для фронтенда и обрабатывает задачи проверки через Redis и фоновый worker.
-Сервис доступен по адресу https://picrete.com
+Rust API (Axum) + фоновый worker для AI-проверки работ студентов. PostgreSQL, Redis, S3-совместимое хранилище.
 
-## Технологический стек
+Продакшен: https://picrete.com
 
-### Backend
-- **Axum** — асинхронный Rust веб-фреймворк
-- **SQLx** — асинхронная работа с PostgreSQL
-- **PostgreSQL** — реляционная база данных
-- **Redis** — кэширование и очереди задач
-- **Tokio** — асинхронная среда выполнения
-- **OpenAI API** — AI для проверки работ
-- **Yandex Object Storage (S3)** — хранение изображений решений
+## Стек
 
-### Инфраструктура
-- **Docker** — контейнеризация
-- **Nginx** — reverse proxy и статика
+| Компонент | Технология |
+|-----------|-----------|
+| Web-фреймворк | Axum 0.7 |
+| Async runtime | Tokio |
+| База данных | PostgreSQL 14+ (SQLx 0.7) |
+| Очереди/кэш | Redis 6+ |
+| AI | OpenAI-совместимый API |
+| Хранение файлов | Yandex Object Storage (S3) |
+| Аутентификация | JWT (jsonwebtoken) + Argon2 |
+| Метрики | Prometheus |
+| Контейнеризация | Docker |
+| Reverse proxy | Nginx |
 
 ## Структура проекта
 
 ```
-app/
-├── src/               # Исходный код
-│   ├── api/           # API эндпоинты
-│   ├── core/          # Конфигурация, безопасность
-│   ├── db/            # Подключение к БД
-│   ├── models/        # Модели данных
-│   ├── schemas/       # Схемы валидации
-│   ├── services/      # Бизнес-логика (AI grading, storage)
-│   └── tasks/         # Фоновые задачи (grading, scheduler)
-├── migrations/        # SQL миграции (SQLx)
-├── tests/             # Тесты
-├── Dockerfile         # Docker образ
-├── docker-compose.prod.yml  # Docker Compose для production
-├── Cargo.toml
-└── README.md
+src/
+├── api/                # HTTP-слой
+│   ├── router.rs       # Маршрутизация
+│   ├── auth.rs         # Аутентификация
+│   ├── guards.rs       # Middleware (роли, права)
+│   ├── handlers.rs     # Общие хендлеры
+│   ├── exams/          # Эндпоинты экзаменов
+│   ├── submissions/    # Эндпоинты работ (студент/преподаватель)
+│   ├── users.rs        # Эндпоинты пользователей
+│   ├── pagination.rs   # Пагинация
+│   ├── validation.rs   # Валидация запросов
+│   └── errors.rs       # Обработка ошибок
+├── core/               # Инфраструктура
+│   ├── config.rs       # Загрузка конфигурации из ENV
+│   ├── state.rs        # AppState (DI)
+│   ├── security.rs     # JWT, хеширование паролей
+│   ├── redis.rs        # Redis-клиент
+│   ├── bootstrap.rs    # Инициализация (суперпользователь)
+│   ├── metrics.rs      # Prometheus метрики
+│   ├── telemetry.rs    # Логирование (tracing)
+│   └── shutdown.rs     # Graceful shutdown
+├── db/                 # Слой базы данных
+│   ├── mod.rs          # Пул соединений, миграции
+│   ├── models.rs       # Модели таблиц
+│   └── types.rs        # Enum-типы PostgreSQL
+├── repositories/       # SQL-запросы
+├── schemas/            # DTO (запросы/ответы)
+├── services/           # Бизнес-логика
+│   ├── ai_grading.rs   # AI-проверка работ
+│   └── storage.rs      # S3-хранилище
+├── tasks/              # Фоновые задачи
+│   ├── scheduler.rs    # Планировщик (worker)
+│   └── grading.rs      # Задача проверки
+├── bin/
+│   └── worker.rs       # Точка входа worker
+├── main.rs             # Точка входа API
+└── lib.rs              # Корневой модуль
 ```
 
-## Быстрый старт
+## Запуск для разработки
 
-### Предварительные требования
+### Требования
 
-- Rust 1.88+ (или используйте rust-toolchain.toml)
+- Rust 1.88+ (см. `rust-toolchain.toml`)
 - PostgreSQL 14+
 - Redis 6+
-- Docker и Docker Compose (для production)
 
-### Установка и запуск
-
-1. **Клонирование репозитория**
+### Настройка
 
 ```bash
-git clone https://github.com/dorogao5/Picrete.git
-cd Picrete/app
+cp .env.example .env
+# Отредактировать .env — заполнить пароли, ключи
 ```
 
-2. **Настройка переменных окружения**
-
-Создайте файл `.env` в корне app:
-
-```env
-# Database
-POSTGRES_SERVER=localhost
-POSTGRES_PORT=5432
-POSTGRES_USER=picretesuperuser
-POSTGRES_PASSWORD=your_password
-POSTGRES_DB=picrete_db
-
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=your_redis_password
-
-# Security
-SECRET_KEY=your_secret_key_here
-
-# OpenAI
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_BASE_URL=your_base_url
-AI_MODEL=gpt-5
-
-# Yandex Object Storage (опционально)
-S3_ENDPOINT=https://storage.yandexcloud.net
-S3_ACCESS_KEY=your_access_key
-S3_SECRET_KEY=your_secret_key
-S3_BUCKET=picrete-data-storage
-S3_REGION=ru-central1
-
-# CORS
-BACKEND_CORS_ORIGINS=http://localhost:5173,http://localhost:3000,https://picrete.com,https://www.picrete.com
-```
-
-3. **Запуск приложения**
+### Запуск
 
 ```bash
+# API-сервер (порт 8000)
 cargo run --bin picrete-rust
-```
 
-4. **Запуск worker (в отдельном терминале)**
-
-```bash
+# Worker (в отдельном терминале)
 cargo run --bin worker
 ```
 
-API будет доступно по адресу `http://localhost:8000`
-
-## Деплой
-
-Для production развертывания используйте Docker Compose:
+### Тесты
 
 ```bash
-cd app
-docker compose -f docker-compose.prod.yml build
-docker compose -f docker-compose.prod.yml up -d
+cargo test
 ```
 
-Подробные инструкции по деплою см. в `DEPLOYMENT_BACKEND.md`
+## Сборка и деплой (Production)
 
-## API Документация
+Бинарники собираются локально на сервере, Docker используется только как runtime-контейнер (без компиляции внутри).
 
-После запуска backend, API документация доступна по адресу:
+### 1. Сборка
+
+```bash
+cd /srv/picrete/app
+cargo build --release --bin picrete-rust --bin worker
+```
+
+### 2. Запуск в Docker
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+### 3. Проверка
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs api --tail=30
+curl -fsS http://127.0.0.1:8000/healthz
+```
+
+### Обновление
+
+```bash
+cd /srv/picrete/app
+git pull origin main
+cargo build --release --bin picrete-rust --bin worker
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Подробные инструкции по настройке сервера: `DEPLOYMENT_BACKEND.md`
+
+## Переменные окружения
+
+См. `.env.example`. Основные группы:
+
+| Группа | Переменные | Описание |
+|--------|-----------|----------|
+| Database | `POSTGRES_*` | Подключение к PostgreSQL |
+| Redis | `REDIS_*` | Подключение к Redis |
+| Security | `SECRET_KEY` | Ключ для JWT-токенов |
+| AI | `OPENAI_*`, `AI_*` | Настройки AI-модели |
+| S3 | `S3_*` | Yandex Object Storage |
+| Admin | `FIRST_SUPERUSER_*` | ISU и пароль первого администратора |
+| Telemetry | `PICRETE_LOG_*`, `PROMETHEUS_ENABLED` | Логирование, метрики |
+
+## API
+
+После запуска документация доступна:
 - Swagger UI: `http://localhost:8000/api/v1/docs`
-- ReDoc: `http://localhost:8000/api/v1/redoc`
+- Продакшен: `https://picrete.com/api/v1/docs`
 
-## Безопасность
+## Frontend
 
-- JWT токены для аутентификации
-- Хеширование паролей с использованием Argon2
-- Валидация файлов при загрузке
-- CORS настройки для защиты от несанкционированных запросов
-- Rate limiting (настраивается через Nginx)
-
-## Связь с Frontend
-
-Backend API доступен по адресу `/api/v1` и ожидает запросы от frontend приложения.
-
-Frontend репозиторий: https://github.com/dorogao5/Front-Picrete
-
-## Лицензия
-
-Copyright (c) 2025
+Репозиторий фронтенда: https://github.com/dorogao5/Front-Picrete
