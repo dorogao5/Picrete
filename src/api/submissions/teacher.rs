@@ -17,53 +17,50 @@ use crate::schemas::submission::{
 
 pub(super) async fn get_submission(
     Path(submission_id): Path<String>,
-    CurrentTeacher(_teacher): CurrentTeacher,
+    CurrentTeacher(teacher): CurrentTeacher,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let submission = repositories::submissions::find_by_id(state.db(), &submission_id)
+    let details = repositories::submissions::find_teacher_details(state.db(), &submission_id)
         .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
+        .map_err(|e| ApiError::internal(e, "Failed to fetch submission details"))?;
 
-    let Some(submission) = submission else {
+    let Some(details) = details else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
+    if !matches!(teacher.role, UserRole::Admin) && details.exam_created_by != teacher.id {
+        return Err(ApiError::Forbidden("You can only manage submissions for your own exams"));
+    }
 
-    let session = super::helpers::fetch_session(state.db(), &submission.session_id).await?;
-    let exam = super::helpers::fetch_exam(state.db(), &session.exam_id).await?;
-
-    let student = repositories::users::find_name_by_id(state.db(), &submission.student_id)
-        .await
-        .unwrap_or(None);
-    let student_isu = repositories::users::find_isu_by_id(state.db(), &submission.student_id)
-        .await
-        .unwrap_or(None);
-
-    let images = super::helpers::fetch_images(state.db(), &submission.id).await?;
-    let scores = super::helpers::fetch_scores(state.db(), &submission.id).await?;
-
-    let tasks_payload = super::helpers::build_task_context(state.db(), &session).await?;
+    let images = super::helpers::fetch_images(state.db(), &details.id).await?;
+    let scores = super::helpers::fetch_scores(state.db(), &details.id).await?;
+    let tasks_payload = super::helpers::build_task_context_from_assignments(
+        state.db(),
+        &details.exam_id,
+        &details.variant_assignments.0,
+    )
+    .await?;
 
     Ok(Json(serde_json::json!({
-        "id": submission.id,
-        "session_id": submission.session_id,
-        "student_id": submission.student_id,
-        "submitted_at": format_primitive(submission.submitted_at),
-        "status": submission.status,
-        "ai_score": submission.ai_score,
-        "final_score": submission.final_score,
-        "max_score": submission.max_score,
-        "ai_analysis": submission.ai_analysis.map(|v| v.0),
-        "ai_comments": submission.ai_comments,
-        "teacher_comments": submission.teacher_comments,
-        "is_flagged": submission.is_flagged,
-        "flag_reasons": submission.flag_reasons.0,
-        "reviewed_by": submission.reviewed_by,
-        "reviewed_at": submission.reviewed_at.map(format_primitive),
+        "id": details.id,
+        "session_id": details.session_id,
+        "student_id": details.student_id,
+        "submitted_at": format_primitive(details.submitted_at),
+        "status": details.status,
+        "ai_score": details.ai_score,
+        "final_score": details.final_score,
+        "max_score": details.max_score,
+        "ai_analysis": details.ai_analysis.map(|v| v.0),
+        "ai_comments": details.ai_comments,
+        "teacher_comments": details.teacher_comments,
+        "is_flagged": details.is_flagged,
+        "flag_reasons": details.flag_reasons.0,
+        "reviewed_by": details.reviewed_by,
+        "reviewed_at": details.reviewed_at.map(format_primitive),
         "images": images,
         "scores": scores,
-        "student_name": student,
-        "student_isu": student_isu,
-        "exam": {"id": exam.id, "title": exam.title},
+        "student_name": details.student_name,
+        "student_isu": details.student_isu,
+        "exam": {"id": details.exam_id, "title": details.exam_title},
         "tasks": tasks_payload,
     })))
 }
@@ -81,6 +78,7 @@ pub(super) async fn approve_submission(
     let Some(submission) = submission else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
+    ensure_teacher_can_manage_submission(&state, &teacher, &submission_id).await?;
 
     if submission.ai_score.is_none() {
         return Err(ApiError::BadRequest(
@@ -118,6 +116,7 @@ pub(super) async fn override_score(
     let Some(submission) = submission else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
+    ensure_teacher_can_manage_submission(&state, &teacher, &submission_id).await?;
 
     if payload.final_score > submission.max_score {
         return Err(ApiError::BadRequest(format!(
@@ -164,6 +163,19 @@ pub(super) async fn get_image_view_url(
     if !is_owner && !is_teacher {
         return Err(ApiError::Forbidden("Access denied"));
     }
+    if matches!(user.role, UserRole::Teacher) {
+        let exam_creator = repositories::submissions::find_exam_creator_by_submission(
+            state.db(),
+            &submission.id,
+        )
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch submission owner"))?
+        .ok_or_else(|| ApiError::NotFound("Submission not found".to_string()))?;
+
+        if exam_creator != user.id {
+            return Err(ApiError::Forbidden("Access denied"));
+        }
+    }
 
     if !image.file_path.starts_with("submissions/") {
         return Err(ApiError::BadRequest(
@@ -173,7 +185,7 @@ pub(super) async fn get_image_view_url(
 
     let storage = state
         .storage()
-        .ok_or_else(|| ApiError::BadRequest("S3 storage not configured".to_string()))?;
+        .ok_or_else(|| ApiError::ServiceUnavailable("S3 storage not configured".to_string()))?;
 
     let url = storage
         .presign_get(&image.file_path, std::time::Duration::from_secs(300))
@@ -200,6 +212,7 @@ pub(super) async fn regrade_submission(
     let Some(_submission) = submission else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
+    ensure_teacher_can_manage_submission(&state, &teacher, &submission_id).await?;
 
     repositories::submissions::queue_regrade(
         state.db(),
@@ -282,4 +295,26 @@ pub(super) async fn grading_status(
             "duration_seconds": submission.ai_request_duration_seconds
         }
     })))
+}
+
+async fn ensure_teacher_can_manage_submission(
+    state: &AppState,
+    teacher: &crate::db::models::User,
+    submission_id: &str,
+) -> Result<(), ApiError> {
+    if matches!(teacher.role, UserRole::Admin) {
+        return Ok(());
+    }
+
+    let exam_creator =
+        repositories::submissions::find_exam_creator_by_submission(state.db(), submission_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch submission owner"))?
+            .ok_or_else(|| ApiError::NotFound("Submission not found".to_string()))?;
+
+    if exam_creator == teacher.id {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden("You can only manage submissions for your own exams"))
+    }
 }

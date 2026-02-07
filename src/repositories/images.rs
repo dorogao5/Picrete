@@ -31,6 +31,22 @@ pub(crate) async fn list_by_submission(
     .await
 }
 
+pub(crate) async fn list_by_submissions(
+    pool: &PgPool,
+    submission_ids: &[String],
+) -> Result<Vec<SubmissionImage>, sqlx::Error> {
+    if submission_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_as::<_, SubmissionImage>(&format!(
+        "SELECT {COLUMNS} FROM submission_images WHERE submission_id = ANY($1) ORDER BY order_index"
+    ))
+    .bind(submission_ids)
+    .fetch_all(pool)
+    .await
+}
+
 pub(crate) async fn count_by_submission(
     pool: &PgPool,
     submission_id: &str,

@@ -5,10 +5,16 @@ WORKDIR /app
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml /app/
 COPY clippy.toml rustfmt.toml /app/
+
+RUN mkdir -p /app/src/bin \
+    && printf "fn main() {}\n" > /app/src/main.rs \
+    && printf "fn main() {}\n" > /app/src/bin/worker.rs \
+    && printf "" > /app/src/lib.rs \
+    && cargo build --release --locked --bin picrete-rust --bin worker
+
 COPY src /app/src
 COPY migrations /app/migrations
 
-WORKDIR /app
 RUN cargo build --release --locked --bin picrete-rust --bin worker
 
 FROM debian:bullseye-slim

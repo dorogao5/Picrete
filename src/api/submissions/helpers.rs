@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 use crate::api::errors::ApiError;
+pub(crate) use crate::core::time::primitive_now_utc as now_primitive;
 use crate::db::models::{Exam, ExamSession, Submission, TaskType};
 use crate::db::types::{SessionStatus, SubmissionStatus};
 use crate::repositories;
@@ -92,7 +94,6 @@ pub(crate) async fn fetch_images(
             id: image.id,
             filename: image.filename,
             order_index: image.order_index,
-            file_path: image.file_path,
             file_size: image.file_size,
             mime_type: image.mime_type,
             is_processed: image.is_processed,
@@ -127,13 +128,13 @@ pub(crate) async fn fetch_scores(
         .collect())
 }
 
-pub(crate) async fn build_task_context(
+pub(crate) async fn build_task_context_from_assignments(
     pool: &sqlx::PgPool,
-    session: &ExamSession,
+    exam_id: &str,
+    assignments: &HashMap<String, String>,
 ) -> Result<Vec<serde_json::Value>, ApiError> {
-    let task_types = fetch_task_types(pool, &session.exam_id).await?;
+    let task_types = fetch_task_types(pool, exam_id).await?;
     let mut tasks = Vec::new();
-    let assignments = session.variant_assignments.0.clone();
 
     for task_type in task_types {
         let variants = repositories::task_types::list_variants(pool, &task_type.id)
@@ -177,16 +178,13 @@ pub(crate) async fn enforce_deadline(
     if OffsetDateTime::now_utc().unix_timestamp() >= hard_deadline.assume_utc().unix_timestamp()
         && session.status == SessionStatus::Active
     {
-        repositories::sessions::update_status(pool, &session.id, SessionStatus::Expired).await.ok();
+        repositories::sessions::update_status(pool, &session.id, SessionStatus::Expired)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to update session status"))?;
         return Ok((hard_deadline, SessionStatus::Expired));
     }
 
     Ok((hard_deadline, session.status))
-}
-
-pub(crate) fn now_primitive() -> PrimitiveDateTime {
-    let now = OffsetDateTime::now_utc();
-    PrimitiveDateTime::new(now.date(), now.time())
 }
 
 pub(crate) fn sanitized_filename(name: &str) -> String {
@@ -206,19 +204,21 @@ pub(crate) async fn ensure_submission(
     pool: &sqlx::PgPool,
     session: &ExamSession,
 ) -> Result<String, ApiError> {
-    let submission_id = repositories::submissions::find_id_by_session(pool, &session.id)
+    let existing_id = repositories::submissions::find_id_by_session(pool, &session.id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
 
-    if let Some(id) = submission_id {
+    if let Some(id) = existing_id {
         return Ok(id);
     }
 
-    let max_score = repositories::exams::max_score_for_exam(pool, &session.exam_id).await;
+    let max_score = repositories::exams::max_score_for_exam(pool, &session.exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch max score"))?;
 
     let now = now_primitive();
     let id = Uuid::new_v4().to_string();
-    repositories::submissions::create(
+    repositories::submissions::create_if_absent(
         pool,
         &id,
         &session.id,
@@ -231,5 +231,8 @@ pub(crate) async fn ensure_submission(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to create submission"))?;
 
-    Ok(id)
+    repositories::submissions::find_id_by_session(pool, &session.id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?
+        .ok_or_else(|| ApiError::Internal("Submission missing after creation".to_string()))
 }

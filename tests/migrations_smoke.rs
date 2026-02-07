@@ -25,8 +25,7 @@ async fn migrations_apply_and_tables_exist() -> anyhow::Result<()> {
     let database_url = match database_url() {
         Some(url) => url,
         None => {
-            eprintln!("DATABASE_URL and POSTGRES_* not set; skipping migrations smoke test");
-            return Ok(());
+            anyhow::bail!("DATABASE_URL and POSTGRES_* are not set");
         }
     };
 

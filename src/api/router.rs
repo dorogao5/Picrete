@@ -62,6 +62,7 @@ pub(crate) fn router(state: AppState) -> Router {
     let mut router: Router<AppState> = Router::new()
         .route("/", get(handlers::root))
         .route("/healthz", get(handlers::healthz).head(handlers::healthz))
+        .route("/readyz", get(handlers::readyz).head(handlers::readyz))
         .nest(&api_v1_prefix, api_v1)
         .layer(NormalizePathLayer::trim_trailing_slash())
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))

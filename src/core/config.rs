@@ -40,7 +40,6 @@ pub(crate) struct ServerSettings {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct ApiSettings {
     pub(crate) project_name: String,
     pub(crate) version: String,
@@ -91,9 +90,7 @@ pub(crate) struct AiSettings {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct StorageSettings {
-    pub(crate) upload_dir: String,
     pub(crate) max_upload_size_mb: u64,
     pub(crate) allowed_image_extensions: Vec<String>,
     pub(crate) max_images_per_submission: u64,
@@ -109,7 +106,6 @@ pub(crate) struct S3Settings {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct ExamSettings {
     pub(crate) max_concurrent_exams: u64,
     pub(crate) auto_save_interval_seconds: u64,
@@ -190,7 +186,7 @@ impl Settings {
                 || environment.is_production();
 
         let project_name = env_or_default("PROJECT_NAME", "Picrete API");
-        let version = env_or_default("VERSION", "1.0.0");
+        let version = env_or_default("VERSION", env!("CARGO_PKG_VERSION"));
         let api_v1_str = env_or_default("API_V1_STR", "/api/v1");
         let terms_version = env_or_default("TERMS_VERSION", "2025-12-09");
         let privacy_version = env_or_default("PRIVACY_VERSION", "2025-12-09");
@@ -229,7 +225,6 @@ impl Settings {
         let ai_request_timeout =
             parse_u64("AI_REQUEST_TIMEOUT", env_or_default("AI_REQUEST_TIMEOUT", "600"))?;
 
-        let upload_dir = env_or_default("UPLOAD_DIR", "./uploads");
         let max_upload_size_mb =
             parse_u64("MAX_UPLOAD_SIZE_MB", env_or_default("MAX_UPLOAD_SIZE_MB", "10"))?;
         let allowed_image_extensions =
@@ -306,7 +301,6 @@ impl Settings {
                 ai_request_timeout,
             },
             storage: StorageSettings {
-                upload_dir,
                 max_upload_size_mb,
                 allowed_image_extensions,
                 max_images_per_submission,
@@ -393,6 +387,21 @@ impl Settings {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
+        if self.storage.allowed_image_extensions.is_empty() {
+            return Err(ConfigError::InvalidValue {
+                field: "ALLOWED_IMAGE_EXTENSIONS",
+                value: String::from("<empty>"),
+            });
+        }
+        for extension in &self.storage.allowed_image_extensions {
+            if !is_supported_image_extension(extension) {
+                return Err(ConfigError::InvalidValue {
+                    field: "ALLOWED_IMAGE_EXTENSIONS",
+                    value: extension.clone(),
+                });
+            }
+        }
+
         if !(self.runtime.strict_config || self.runtime.environment.is_production()) {
             return Ok(());
         }
@@ -525,7 +534,7 @@ fn parse_string_list(value: Option<String>, defaults: &[&str]) -> Vec<String> {
     match value {
         Some(raw) => raw
             .split(',')
-            .map(|item| item.trim().to_string())
+            .map(|item| item.trim().to_ascii_lowercase())
             .filter(|item| !item.is_empty())
             .collect(),
         None => defaults.iter().map(|item| item.to_string()).collect(),
@@ -545,6 +554,10 @@ fn parse_environment(value: Option<String>) -> Environment {
     }
 }
 
+fn is_supported_image_extension(extension: &str) -> bool {
+    matches!(extension, "jpg" | "jpeg" | "png" | "webp" | "gif")
+}
+
 fn load_or_create_secret_key() -> String {
     let path = secret_file_path();
 
@@ -558,7 +571,9 @@ fn load_or_create_secret_key() -> String {
     let new_key = generate_secret_key();
 
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+        if let Err(err) = fs::create_dir_all(parent) {
+            tracing::warn!(error = %err, path = %parent.display(), "Failed to create secret key directory");
+        }
     }
 
     match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -566,9 +581,13 @@ fn load_or_create_secret_key() -> String {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+                if let Err(err) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
+                    tracing::warn!(error = %err, path = %path.display(), "Failed to set secret key file permissions");
+                }
             }
-            let _ = std::io::Write::write_all(&mut file, new_key.as_bytes());
+            if let Err(err) = std::io::Write::write_all(&mut file, new_key.as_bytes()) {
+                tracing::warn!(error = %err, path = %path.display(), "Failed to write secret key file");
+            }
             return new_key;
         }
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -579,7 +598,9 @@ fn load_or_create_secret_key() -> String {
                 }
             }
         }
-        Err(_) => {}
+        Err(err) => {
+            tracing::warn!(error = %err, path = %path.display(), "Failed to create secret key file");
+        }
     }
 
     new_key

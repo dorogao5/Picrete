@@ -6,10 +6,11 @@ use crate::core::state::AppState;
 use crate::schemas::{HealthResponse, RootResponse};
 
 pub(crate) async fn root(State(state): State<AppState>) -> Json<RootResponse> {
+    let api = state.settings().api();
     let response = RootResponse {
-        message: "Picrete Rust API".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        docs_url: format!("{}/docs", state.settings().api().api_v1_str),
+        message: api.project_name.clone(),
+        version: api.version.clone(),
+        docs_url: format!("{}/docs", api.api_v1_str),
     };
 
     Json(response)
@@ -43,6 +44,37 @@ pub(crate) async fn healthz(State(state): State<AppState>) -> Json<HealthRespons
     }
 
     Json(HealthResponse { service: "picrete-api".to_string(), status, components })
+}
+
+pub(crate) async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
+    let mut components = HashMap::new();
+
+    match sqlx::query("SELECT 1").execute(state.db()).await {
+        Ok(_) => {
+            components.insert("database".to_string(), "ready".to_string());
+            (
+                StatusCode::OK,
+                Json(HealthResponse {
+                    service: "picrete-api".to_string(),
+                    status: "ready".to_string(),
+                    components,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            components.insert("database".to_string(), format!("not_ready: {err}"));
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(HealthResponse {
+                    service: "picrete-api".to_string(),
+                    status: "not_ready".to_string(),
+                    components,
+                }),
+            )
+                .into_response()
+        }
+    }
 }
 
 pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse {

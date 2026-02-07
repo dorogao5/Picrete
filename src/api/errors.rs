@@ -17,7 +17,6 @@ pub(crate) enum ApiError {
     NotFound(String),
     Conflict(String),
     TooManyRequests(&'static str),
-    #[allow(dead_code)]
     ServiceUnavailable(String),
     Internal(String),
 }
@@ -77,13 +76,11 @@ impl IntoResponse for ApiError {
                     .into_response()
             }
             ApiError::ServiceUnavailable(message) => {
-                tracing::error!(error = %message, "Service unavailable");
                 let status = StatusCode::SERVICE_UNAVAILABLE;
                 (status, Json(ErrorResponse { status: status.as_u16(), detail: message }))
                     .into_response()
             }
             ApiError::Internal(message) => {
-                tracing::error!(error = %message, "Internal server error");
                 let status = StatusCode::INTERNAL_SERVER_ERROR;
                 (status, Json(ErrorResponse { status: status.as_u16(), detail: message }))
                     .into_response()

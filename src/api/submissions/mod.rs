@@ -15,13 +15,12 @@ pub(crate) struct PresignQuery {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub(crate) struct ListSubmissionsQuery {
     #[serde(default)]
     pub(crate) status: Option<SubmissionStatus>,
     #[serde(default)]
     pub(crate) skip: i64,
-    #[serde(default = "default_limit")]
+    #[serde(default = "crate::api::pagination::default_limit")]
     pub(crate) limit: i64,
 }
 
@@ -43,10 +42,6 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/images/:image_id/view-url", get(teacher::get_image_view_url))
         .route("/:submission_id/regrade", post(teacher::regrade_submission))
         .route("/grading-status/:submission_id", get(teacher::grading_status))
-}
-
-pub(super) fn default_limit() -> i64 {
-    100
 }
 
 #[cfg(test)]

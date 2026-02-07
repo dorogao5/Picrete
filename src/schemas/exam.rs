@@ -6,6 +6,7 @@ use time::{
 };
 use validator::Validate;
 
+pub(crate) use crate::core::time::format_primitive;
 use crate::db::types::{DifficultyLevel, ExamStatus};
 
 #[derive(Debug, Deserialize, Validate)]
@@ -190,15 +191,6 @@ pub(crate) struct ExamSummaryResponse {
     pub(crate) pending_count: i64,
 }
 
-#[allow(dead_code)]
-pub(crate) fn format_offset(value: OffsetDateTime) -> String {
-    value.format(&Rfc3339).unwrap_or_else(|_| value.to_string())
-}
-
-pub(crate) fn format_primitive(value: PrimitiveDateTime) -> String {
-    value.assume_utc().format(&Rfc3339).unwrap_or_else(|_| value.assume_utc().to_string())
-}
-
 fn default_tolerance() -> f64 {
     0.01
 }
@@ -276,29 +268,5 @@ where
             .ok_or_else(|| D::Error::custom(format!("invalid datetime: {value}")))
             .map(Some),
         None => Ok(None),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use time::{Date, Time, UtcOffset};
-
-    #[test]
-    fn format_primitive_outputs_utc_z() {
-        let date = Date::from_calendar_date(2025, time::Month::January, 2).unwrap();
-        let time = Time::from_hms(10, 20, 30).unwrap();
-        let value = PrimitiveDateTime::new(date, time);
-        assert_eq!(format_primitive(value), "2025-01-02T10:20:30Z");
-    }
-
-    #[test]
-    fn format_offset_preserves_offset() {
-        let date = Date::from_calendar_date(2025, time::Month::January, 2).unwrap();
-        let time = Time::from_hms(10, 20, 30).unwrap();
-        let utc = PrimitiveDateTime::new(date, time).assume_utc();
-        let offset = UtcOffset::from_hms(3, 0, 0).unwrap();
-        let shifted = utc.to_offset(offset);
-        assert_eq!(format_offset(shifted), "2025-01-02T13:20:30+03:00");
     }
 }

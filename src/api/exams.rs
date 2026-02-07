@@ -1,13 +1,15 @@
 use axum::{extract::Query, routing::get, routing::post, Json, Router};
 use serde::Deserialize;
-use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
+use time::PrimitiveDateTime;
 use uuid::Uuid;
 
 use validator::Validate;
 
 use crate::api::errors::ApiError;
 use crate::api::guards::{CurrentTeacher, CurrentUser};
+use crate::api::pagination::PaginatedResponse;
 use crate::core::state::AppState;
+use crate::core::time::{primitive_now_utc, to_primitive_utc};
 use crate::db::models::Exam;
 use crate::db::types::{ExamStatus, SubmissionStatus, UserRole};
 use crate::repositories;
@@ -21,7 +23,7 @@ use sqlx::{types::Json as SqlxJson, Postgres, QueryBuilder, Row};
 pub(crate) struct ListExamsQuery {
     #[serde(default)]
     skip: i64,
-    #[serde(default = "default_limit")]
+    #[serde(default = "crate::api::pagination::default_limit")]
     limit: i64,
     #[serde(default)]
     status: Option<ExamStatus>,
@@ -40,7 +42,7 @@ pub(crate) struct ListExamSubmissionsQuery {
     status: Option<SubmissionStatus>,
     #[serde(default)]
     skip: i64,
-    #[serde(default = "default_limit")]
+    #[serde(default = "crate::api::pagination::default_limit")]
     limit: i64,
 }
 
@@ -67,7 +69,7 @@ async fn create_exam(
     let start_time = to_primitive_utc(payload.start_time);
     let end_time = to_primitive_utc(payload.end_time);
 
-    let now = now_primitive();
+    let now = primitive_now_utc();
     let mut tx = state
         .db()
         .begin()
@@ -113,7 +115,7 @@ async fn list_exams(
     CurrentUser(user): CurrentUser,
     state: axum::extract::State<AppState>,
     Query(params): Query<ListExamsQuery>,
-) -> Result<Json<Vec<ExamSummaryResponse>>, ApiError> {
+) -> Result<Json<PaginatedResponse<ExamSummaryResponse>>, ApiError> {
     let skip = params.skip.max(0);
     let limit = params.limit.clamp(1, 1000);
 
@@ -121,7 +123,8 @@ async fn list_exams(
         "SELECT e.id, e.title, e.start_time, e.end_time, e.duration_minutes, e.status,
                 COALESCE(tc.cnt, 0) AS task_count,
                 COALESCE(sc.cnt, 0) AS student_count,
-                COALESCE(pc.cnt, 0) AS pending_count
+                COALESCE(pc.cnt, 0) AS pending_count,
+                COUNT(*) OVER() AS total_count
          FROM exams e
          LEFT JOIN (SELECT exam_id, COUNT(*) AS cnt FROM task_types GROUP BY exam_id) tc
              ON tc.exam_id = e.id
@@ -143,6 +146,8 @@ async fn list_exams(
         builder.push_bind(ExamStatus::Published);
         builder.push(", ");
         builder.push_bind(ExamStatus::Active);
+        builder.push(", ");
+        builder.push_bind(ExamStatus::Completed);
         builder.push(")");
     }
 
@@ -169,6 +174,7 @@ async fn list_exams(
         .map_err(|e| ApiError::internal(e, "Failed to list exams"))?;
 
     let mut summaries = Vec::new();
+    let mut total_count = 0;
 
     for row in rows {
         let exam_id: String = row.try_get("id").map_err(|e| ApiError::internal(e, "Bad row"))?;
@@ -187,6 +193,7 @@ async fn list_exams(
             row.try_get("student_count").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let pending_count: i64 =
             row.try_get("pending_count").map_err(|e| ApiError::internal(e, "Bad row"))?;
+        total_count = row.try_get("total_count").map_err(|e| ApiError::internal(e, "Bad row"))?;
 
         summaries.push(ExamSummaryResponse {
             id: exam_id,
@@ -201,7 +208,7 @@ async fn list_exams(
         });
     }
 
-    Ok(Json(summaries))
+    Ok(Json(PaginatedResponse { items: summaries, total_count, skip, limit }))
 }
 
 async fn get_exam(
@@ -218,7 +225,7 @@ async fn get_exam(
     };
 
     if matches!(user.role, UserRole::Student)
-        && !matches!(exam.status, ExamStatus::Published | ExamStatus::Active)
+        && !matches!(exam.status, ExamStatus::Published | ExamStatus::Active | ExamStatus::Completed)
     {
         return Err(ApiError::Forbidden("Access denied"));
     }
@@ -242,7 +249,7 @@ async fn update_exam(
         return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
-    if exam.created_by != teacher.id {
+    if !can_manage_exam(&teacher, &exam) {
         return Err(ApiError::Forbidden("You can only update your own exams"));
     }
 
@@ -255,7 +262,7 @@ async fn update_exam(
         return Err(ApiError::BadRequest("end_time must be after start_time".to_string()));
     }
 
-    let now = now_primitive();
+    let now = primitive_now_utc();
     let start_time = payload.start_time.map(to_primitive_utc);
     let end_time = payload.end_time.map(to_primitive_utc);
 
@@ -305,7 +312,7 @@ async fn delete_exam(
         return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
-    if exam.created_by != teacher.id {
+    if !can_manage_exam(&teacher, &exam) {
         return Err(ApiError::Forbidden("You can only delete your own exams"));
     }
 
@@ -339,7 +346,7 @@ async fn publish_exam(
         return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
-    if exam.created_by != teacher.id {
+    if !can_manage_exam(&teacher, &exam) {
         return Err(ApiError::Forbidden("You can only publish your own exams"));
     }
 
@@ -355,7 +362,7 @@ async fn publish_exam(
         return Err(ApiError::BadRequest("Exam must have at least one task type".to_string()));
     }
 
-    let now = now_primitive();
+    let now = primitive_now_utc();
     repositories::exams::publish(state.db(), &exam_id, now)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to publish exam"))?;
@@ -392,7 +399,7 @@ async fn add_task_type(
         return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
-    if exam.created_by != teacher.id {
+    if !can_manage_exam(&teacher, &exam) {
         return Err(ApiError::Forbidden("You can only add task types to your own exams"));
     }
 
@@ -402,7 +409,7 @@ async fn add_task_type(
         .await
         .map_err(|e| ApiError::internal(e, "Failed to start transaction"))?;
 
-    let now = now_primitive();
+    let now = primitive_now_utc();
     let task_type_id = Uuid::new_v4().to_string();
 
     sqlx::query(
@@ -447,7 +454,7 @@ async fn list_exam_submissions(
     Query(params): Query<ListExamSubmissionsQuery>,
     CurrentTeacher(teacher): CurrentTeacher,
     state: axum::extract::State<AppState>,
-) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+) -> Result<Json<PaginatedResponse<serde_json::Value>>, ApiError> {
     let exam = repositories::exams::find_by_id(state.db(), &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
@@ -456,73 +463,45 @@ async fn list_exam_submissions(
         return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
-    if exam.created_by != teacher.id {
+    if !can_manage_exam(&teacher, &exam) {
         return Err(ApiError::Forbidden("You can only view submissions for your own exams"));
     }
 
-    let mut query = String::from(
-        "SELECT s.id, s.student_id, u.isu, u.full_name, s.submitted_at, s.status,
-                s.ai_score, s.final_score, s.max_score
-         FROM submissions s
-         JOIN exam_sessions es ON s.session_id = es.id
-         JOIN users u ON u.id = s.student_id
-         WHERE es.exam_id = $1",
-    );
-
-    if params.status.is_some() {
-        query.push_str(" AND s.status = $2");
-    }
-
-    let skip = params.skip.max(0);
-    let limit = params.limit.clamp(1, 1000);
-    query.push_str(" ORDER BY s.submitted_at DESC");
-    query.push_str(&format!(" OFFSET {skip} LIMIT {limit}"));
-
-    let mut sql = sqlx::query(&query).bind(&exam_id);
-    if let Some(status) = params.status {
-        sql = sql.bind(status);
-    }
-
-    let rows = sql
-        .fetch_all(state.db())
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to list submissions"))?;
+    let rows = repositories::exams::list_submissions_by_exam(
+        state.db(),
+        &exam_id,
+        params.status,
+        params.skip,
+        params.limit,
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to list submissions"))?;
+    let total_count =
+        repositories::exams::count_submissions_by_exam(state.db(), &exam_id, params.status)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to count submissions"))?;
 
     let mut response = Vec::new();
     for row in rows {
-        let submission_id: String =
-            row.try_get("id").map_err(|e| ApiError::internal(e, "Bad row"))?;
-        let student_id: String =
-            row.try_get("student_id").map_err(|e| ApiError::internal(e, "Bad row"))?;
-        let student_isu: String =
-            row.try_get("isu").map_err(|e| ApiError::internal(e, "Bad row"))?;
-        let student_name: String =
-            row.try_get("full_name").map_err(|e| ApiError::internal(e, "Bad row"))?;
-        let submitted_at: PrimitiveDateTime =
-            row.try_get("submitted_at").map_err(|e| ApiError::internal(e, "Bad row"))?;
-        let status: SubmissionStatus =
-            row.try_get("status").map_err(|e| ApiError::internal(e, "Bad row"))?;
-        let ai_score: Option<f64> =
-            row.try_get("ai_score").map_err(|e| ApiError::internal(e, "Bad row"))?;
-        let final_score: Option<f64> =
-            row.try_get("final_score").map_err(|e| ApiError::internal(e, "Bad row"))?;
-        let max_score: f64 =
-            row.try_get("max_score").map_err(|e| ApiError::internal(e, "Bad row"))?;
-
         response.push(serde_json::json!({
-            "id": submission_id,
-            "student_id": student_id,
-            "student_isu": student_isu,
-            "student_name": student_name,
-            "submitted_at": format_primitive(submitted_at),
-            "status": status,
-            "ai_score": ai_score,
-            "final_score": final_score,
-            "max_score": max_score,
+            "id": row.id,
+            "student_id": row.student_id,
+            "student_isu": row.student_isu,
+            "student_name": row.student_name,
+            "submitted_at": format_primitive(row.submitted_at),
+            "status": row.status,
+            "ai_score": row.ai_score,
+            "final_score": row.final_score,
+            "max_score": row.max_score,
         }));
     }
 
-    Ok(Json(response))
+    Ok(Json(PaginatedResponse {
+        items: response,
+        total_count,
+        skip: params.skip.max(0),
+        limit: params.limit.clamp(1, 1000),
+    }))
 }
 
 async fn insert_task_types(
@@ -531,7 +510,7 @@ async fn insert_task_types(
     task_types: Vec<TaskTypeCreate>,
 ) -> Result<Vec<TaskTypeResponse>, ApiError> {
     let mut responses = Vec::new();
-    let now = now_primitive();
+    let now = primitive_now_utc();
 
     for task_type in task_types {
         let task_type_id = Uuid::new_v4().to_string();
@@ -590,7 +569,7 @@ async fn insert_variants(
     variants: Vec<TaskVariantCreate>,
 ) -> Result<Vec<TaskVariantResponse>, ApiError> {
     let mut responses = Vec::new();
-    let now = now_primitive();
+    let now = primitive_now_utc();
 
     for variant in variants {
         let variant_id = Uuid::new_v4().to_string();
@@ -703,18 +682,8 @@ fn exam_to_response(exam: Exam, task_types: Vec<TaskTypeResponse>) -> ExamRespon
     }
 }
 
-fn to_primitive_utc(value: OffsetDateTime) -> PrimitiveDateTime {
-    let utc = value.to_offset(UtcOffset::UTC);
-    PrimitiveDateTime::new(utc.date(), utc.time())
-}
-
-fn now_primitive() -> PrimitiveDateTime {
-    let now = OffsetDateTime::now_utc();
-    PrimitiveDateTime::new(now.date(), now.time())
-}
-
-fn default_limit() -> i64 {
-    100
+fn can_manage_exam(user: &crate::db::models::User, exam: &Exam) -> bool {
+    matches!(user.role, UserRole::Admin) || exam.created_by == user.id
 }
 
 #[cfg(test)]

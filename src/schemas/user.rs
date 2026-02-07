@@ -1,7 +1,6 @@
-use serde::{Deserialize, Serialize};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime, PrimitiveDateTime};
-
+use crate::core::time::{format_offset, format_primitive};
 use crate::db::types::UserRole;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct UserCreate {
@@ -99,32 +98,10 @@ impl UserResponse {
     }
 }
 
-fn format_offset(value: OffsetDateTime) -> String {
-    value.format(&Rfc3339).unwrap_or_else(|_| value.to_string())
-}
-
-fn format_primitive(value: PrimitiveDateTime) -> String {
-    value.assume_utc().format(&Rfc3339).unwrap_or_else(|_| value.assume_utc().to_string())
-}
-
 fn default_user_role() -> UserRole {
     UserRole::Student
 }
 
 fn default_true() -> bool {
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use time::{Date, Time};
-
-    #[test]
-    fn format_primitive_outputs_utc_z() {
-        let date = Date::from_calendar_date(2025, time::Month::March, 4).unwrap();
-        let time = Time::from_hms(7, 8, 9).unwrap();
-        let value = PrimitiveDateTime::new(date, time);
-        assert_eq!(format_primitive(value), "2025-03-04T07:08:09Z");
-    }
 }

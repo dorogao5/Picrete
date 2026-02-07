@@ -6,3 +6,4 @@ pub(crate) mod security;
 pub(crate) mod shutdown;
 pub(crate) mod state;
 pub(crate) mod telemetry;
+pub(crate) mod time;

@@ -11,6 +11,7 @@ use crate::db::types::{DifficultyLevel, ExamStatus, SessionStatus, SubmissionSta
 pub(crate) struct User {
     pub(crate) id: String,
     pub(crate) isu: String,
+    #[serde(skip_serializing)]
     pub(crate) hashed_password: String,
     pub(crate) full_name: String,
     pub(crate) role: UserRole,

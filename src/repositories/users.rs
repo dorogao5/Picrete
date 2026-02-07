@@ -29,23 +29,6 @@ pub(crate) async fn exists_by_isu(pool: &PgPool, isu: &str) -> Result<Option<Str
         .await
 }
 
-pub(crate) async fn find_name_by_id(
-    pool: &PgPool,
-    id: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar::<_, String>("SELECT full_name FROM users WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-}
-
-pub(crate) async fn find_isu_by_id(pool: &PgPool, id: &str) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar::<_, String>("SELECT isu FROM users WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-}
-
 pub(crate) struct CreateUser<'a> {
     pub id: &'a str,
     pub isu: &'a str,

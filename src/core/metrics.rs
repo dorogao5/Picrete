@@ -12,7 +12,9 @@ pub(crate) fn init(settings: &Settings) -> anyhow::Result<()> {
     }
 
     let handle = PrometheusBuilder::new().install_recorder()?;
-    let _ = PROM_HANDLE.set(handle);
+    if PROM_HANDLE.set(handle).is_err() {
+        tracing::warn!("Prometheus metrics recorder was already initialized");
+    }
     Ok(())
 }
 

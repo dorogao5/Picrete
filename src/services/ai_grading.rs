@@ -149,12 +149,26 @@ impl AiGradingService {
             match response {
                 Ok(resp) => {
                     let status = resp.status();
-                    body = resp.json().await.unwrap_or(Value::Null);
-                    if status.is_success() {
-                        last_error = None;
-                        break;
+                    let raw_body =
+                        resp.text().await.context("Failed to read OpenAI response body")?;
+
+                    match serde_json::from_str::<Value>(&raw_body) {
+                        Ok(parsed) => {
+                            body = parsed;
+                            if status.is_success() {
+                                last_error = None;
+                                break;
+                            }
+                            last_error = Some(anyhow::anyhow!(
+                                "OpenAI API error (status {status}): {raw_body}"
+                            ));
+                        }
+                        Err(parse_err) => {
+                            last_error = Some(anyhow::anyhow!(
+                                "OpenAI API returned non-JSON response (status {status}): {parse_err}; body: {raw_body}"
+                            ));
+                        }
                     }
-                    last_error = Some(anyhow::anyhow!("OpenAI API error: {body}"));
                 }
                 Err(err) => {
                     last_error = Some(anyhow::anyhow!(err).context("Failed to call OpenAI API"));

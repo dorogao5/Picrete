@@ -23,18 +23,13 @@ pub async fn run() -> anyhow::Result<()> {
     db::run_migrations(&db_pool).await?;
 
     let redis = RedisHandle::new(settings.redis().redis_url());
-    if let Err(err) = redis.connect().await {
-        tracing::error!(error = %err, "Failed to connect to Redis; continuing without cache");
-    } else {
-        tracing::info!("Redis connected successfully");
-    }
+    redis.connect().await?;
+    tracing::info!("Redis connected successfully");
 
     let storage = StorageService::from_settings(&settings).await?;
     let state = AppState::new(settings, db_pool, redis.clone(), storage);
 
-    if let Err(err) = core::bootstrap::ensure_superuser(&state).await {
-        tracing::error!(error = %err, "Failed to ensure default superuser");
-    }
+    core::bootstrap::ensure_superuser(&state).await?;
     let app = api::router::router(state.clone());
     let listener = tokio::net::TcpListener::bind(state.settings().server_addr()).await?;
 
@@ -67,11 +62,8 @@ pub async fn run_worker() -> anyhow::Result<()> {
     db::run_migrations(&db_pool).await?;
 
     let redis = RedisHandle::new(settings.redis().redis_url());
-    if let Err(err) = redis.connect().await {
-        tracing::error!(error = %err, "Failed to connect to Redis; continuing without cache");
-    } else {
-        tracing::info!("Redis connected successfully");
-    }
+    redis.connect().await?;
+    tracing::info!("Redis connected successfully");
 
     let storage = StorageService::from_settings(&settings).await?;
     let state = AppState::new(settings, db_pool, redis.clone(), storage);

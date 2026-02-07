@@ -5,13 +5,15 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use time::{OffsetDateTime, PrimitiveDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::api::errors::ApiError;
 use crate::api::guards::CurrentUser;
+use crate::api::validation::{validate_isu, validate_password_len};
 use crate::core::security;
 use crate::core::state::AppState;
+use crate::core::time::primitive_now_utc;
 use crate::db::models::User;
 use crate::db::types::UserRole;
 use crate::repositories;
@@ -42,13 +44,20 @@ async fn signup(
     Json(payload): Json<UserCreate>,
 ) -> Result<(StatusCode, Json<TokenResponse>), ApiError> {
     validate_isu(&payload.isu)?;
+    validate_password_len(&payload.password)?;
 
     let rate_key = format!("rl:signup:{}", payload.isu);
-    let allowed = state
+    let allowed = match state
         .redis()
         .rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
         .await
-        .unwrap_or(true);
+    {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(error = %err, "Failed to check signup rate limit");
+            false
+        }
+    };
     if !allowed {
         return Err(ApiError::TooManyRequests("Too many signup attempts, try again later"));
     }
@@ -69,7 +78,7 @@ async fn signup(
         .map_err(|e| ApiError::internal(e, "Failed to hash password"))?;
 
     let now_offset = OffsetDateTime::now_utc();
-    let now_primitive = primitive_now_utc(now_offset);
+    let now_primitive = primitive_now_utc();
 
     let pd_consent_version = payload
         .pd_consent_version
@@ -124,13 +133,20 @@ async fn login(
     Json(payload): Json<UserLogin>,
 ) -> Result<Json<TokenResponse>, ApiError> {
     validate_isu(&payload.isu)?;
+    validate_password_len(&payload.password)?;
 
     let rate_key = format!("rl:login:{}", payload.isu);
-    let allowed = state
+    let allowed = match state
         .redis()
         .rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
         .await
-        .unwrap_or(true);
+    {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(error = %err, "Failed to check login rate limit");
+            false
+        }
+    };
     if !allowed {
         return Err(ApiError::TooManyRequests("Too many login attempts, try again later"));
     }
@@ -163,13 +179,20 @@ async fn token(
     Form(payload): Form<OAuth2PasswordForm>,
 ) -> Result<Json<TokenResponse>, ApiError> {
     validate_isu(&payload.username)?;
+    validate_password_len(&payload.password)?;
 
     let rate_key = format!("rl:token:{}", payload.username);
-    let allowed = state
+    let allowed = match state
         .redis()
         .rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
         .await
-        .unwrap_or(true);
+    {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(error = %err, "Failed to check token rate limit");
+            false
+        }
+    };
     if !allowed {
         return Err(ApiError::TooManyRequests("Too many token attempts, try again later"));
     }
@@ -206,17 +229,4 @@ async fn fetch_user_by_isu(state: &AppState, isu: &str) -> Result<User, ApiError
         .await
         .map_err(|e| ApiError::internal(e, "Failed to load user"))?
         .ok_or(ApiError::Unauthorized("Incorrect ISU or password"))
-}
-
-fn validate_isu(isu: &str) -> Result<(), ApiError> {
-    let valid = isu.len() == 6 && isu.chars().all(|c| c.is_ascii_digit());
-    if valid {
-        Ok(())
-    } else {
-        Err(ApiError::BadRequest("Invalid ISU format".to_string()))
-    }
-}
-
-fn primitive_now_utc(offset: OffsetDateTime) -> PrimitiveDateTime {
-    PrimitiveDateTime::new(offset.date(), offset.time())
 }

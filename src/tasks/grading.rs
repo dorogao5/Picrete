@@ -5,6 +5,7 @@ use sqlx::PgPool;
 use time::{OffsetDateTime, PrimitiveDateTime};
 
 use crate::core::state::AppState;
+use crate::core::time::primitive_now_utc as now_primitive;
 use crate::db::models::{Exam, ExamSession, Submission, SubmissionImage};
 use crate::db::types::{ExamStatus, SessionStatus, SubmissionStatus};
 use crate::services::ai_grading::{AiGradingService, GradeRequest};
@@ -229,35 +230,26 @@ pub(crate) async fn process_completed_exams(state: &AppState) -> Result<()> {
     let mut queued = 0;
 
     for exam in &exams {
-        let submissions = sqlx::query_scalar::<_, String>(
-            "SELECT DISTINCT s.id
-             FROM submissions s
-             JOIN exam_sessions es ON es.id = s.session_id
-             JOIN submission_images si ON si.submission_id = s.id
-             WHERE es.exam_id = $1 AND s.status = $2",
+        let queued_ids = sqlx::query_scalar::<_, String>(
+            "UPDATE submissions s
+             SET status = $1,
+                 ai_request_started_at = NULL,
+                 updated_at = $2
+             FROM exam_sessions es
+             WHERE es.id = s.session_id
+               AND es.exam_id = $3
+               AND s.status = $4
+               AND s.ai_request_started_at IS NULL
+             RETURNING s.id",
         )
+        .bind(SubmissionStatus::Processing)
+        .bind(now)
         .bind(&exam.id)
         .bind(SubmissionStatus::Uploaded)
         .fetch_all(state.db())
         .await
-        .context("Failed to fetch submissions")?;
-
-        for submission_id in submissions {
-            let updated = sqlx::query(
-                "UPDATE submissions SET status = $1, ai_request_started_at = NULL, updated_at = $2
-                 WHERE id = $3",
-            )
-            .bind(SubmissionStatus::Processing)
-            .bind(now)
-            .bind(&submission_id)
-            .execute(state.db())
-            .await
-            .context("Failed to queue submission for processing")?;
-
-            if updated.rows_affected() > 0 {
-                queued += 1;
-            }
-        }
+        .context("Failed to queue submissions for processing")?;
+        queued += queued_ids.len();
 
         sqlx::query("UPDATE exams SET status = $1, updated_at = $2 WHERE id = $3")
             .bind(ExamStatus::Completed)
@@ -381,11 +373,6 @@ pub(crate) async fn retry_failed_submissions(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn cleanup_old_results() -> Result<()> {
-    tracing::info!("Task results cleanup completed");
-    Ok(())
-}
-
 async fn build_task_prompt(
     pool: &PgPool,
     exam: &Exam,
@@ -506,9 +493,4 @@ async fn flag_submission(
         .context("Failed to flag submission")?;
 
     Ok(())
-}
-
-fn now_primitive() -> PrimitiveDateTime {
-    let now = OffsetDateTime::now_utc();
-    PrimitiveDateTime::new(now.date(), now.time())
 }

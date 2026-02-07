@@ -17,3 +17,19 @@ pub(crate) async fn list_by_submission(
     .fetch_all(pool)
     .await
 }
+
+pub(crate) async fn list_by_submissions(
+    pool: &PgPool,
+    submission_ids: &[String],
+) -> Result<Vec<SubmissionScore>, sqlx::Error> {
+    if submission_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_as::<_, SubmissionScore>(&format!(
+        "SELECT {COLUMNS} FROM submission_scores WHERE submission_id = ANY($1)"
+    ))
+    .bind(submission_ids)
+    .fetch_all(pool)
+    .await
+}

@@ -55,7 +55,8 @@ impl RedisHandle {
     ) -> Result<bool, RedisError> {
         let manager = { self.manager.read().await.clone() };
         let Some(mut manager) = manager else {
-            return Ok(true);
+            tracing::warn!("Rate limit check denied because Redis is disconnected");
+            return Ok(false);
         };
 
         let script = redis::Script::new(
@@ -99,5 +100,18 @@ mod tests {
 
         assert!(first);
         assert!(!second);
+    }
+
+    #[tokio::test]
+    async fn rate_limit_denies_when_disconnected() {
+        let _guard = test_support::env_lock();
+        test_support::set_test_env();
+
+        let settings = Settings::load().expect("settings");
+        let redis = RedisHandle::new(settings.redis().redis_url());
+
+        let allowed = redis.rate_limit("rate-limit:disconnected", 1, 5).await.expect("rate limit");
+
+        assert!(!allowed);
     }
 }
