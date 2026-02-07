@@ -216,6 +216,7 @@ pub(in crate::api::submissions) async fn get_session_variant(
         Some(submission_id) => {
             let images =
                 crate::api::submissions::helpers::fetch_images(state.db(), &submission_id).await?;
+            // Sync .map() only — no async inside iterator
             images
                 .into_iter()
                 .map(|img| {

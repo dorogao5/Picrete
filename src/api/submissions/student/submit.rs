@@ -33,6 +33,21 @@ pub(in crate::api::submissions) async fn submit_exam(
         return Err(ApiError::BadRequest("Session is not active or has expired".to_string()));
     }
 
+    // Check image count before creating/updating submission (fail fast, no partial state)
+    let existing_submission_id =
+        repositories::submissions::find_id_by_session(state.db(), &session_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
+    let images = match &existing_submission_id {
+        Some(id) => crate::api::submissions::helpers::fetch_images(state.db(), id).await?,
+        None => vec![],
+    };
+    if images.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Добавьте хотя бы одно фото решения перед отправкой".to_string(),
+        ));
+    }
+
     let max_score = repositories::exams::max_score_for_exam(state.db(), &session.exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch max score"))?;
@@ -54,13 +69,6 @@ pub(in crate::api::submissions) async fn submit_exam(
         .await
         .map_err(|e| ApiError::internal(e, "Failed to refresh submission"))?
         .ok_or_else(|| ApiError::Internal("Submission missing".to_string()))?;
-    let images = crate::api::submissions::helpers::fetch_images(state.db(), &submission.id).await?;
-
-    if images.is_empty() {
-        return Err(ApiError::BadRequest(
-            "Добавьте хотя бы одно фото решения перед отправкой".to_string(),
-        ));
-    }
 
     repositories::sessions::submit(state.db(), &session_id, now)
         .await
