@@ -11,6 +11,7 @@ target/
 .secret_key
 *.rs.bk
 uploads/
+ARCHITECTURE.md
 # ============================================
 # Python / Backend
 # ============================================
