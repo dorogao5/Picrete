@@ -109,17 +109,22 @@ pub(super) async fn override_score(
     State(state): State<AppState>,
     Json(payload): Json<SubmissionOverrideRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    payload
-        .validate()
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let submission = repositories::submissions::find_by_id(state.db(), &submission_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
 
-    let Some(_submission) = submission else {
+    let Some(submission) = submission else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
+
+    if payload.final_score > submission.max_score {
+        return Err(ApiError::BadRequest(format!(
+            "final_score cannot exceed max_score ({})",
+            submission.max_score
+        )));
+    }
 
     let now = super::helpers::now_primitive();
     repositories::submissions::override_score(

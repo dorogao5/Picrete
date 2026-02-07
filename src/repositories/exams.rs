@@ -22,16 +22,6 @@ pub(crate) async fn fetch_one_by_id(pool: &PgPool, id: &str) -> Result<Exam, sql
         .await
 }
 
-pub(crate) async fn exists_by_id(
-    executor: impl sqlx::PgExecutor<'_>,
-    id: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar::<_, String>("SELECT id FROM exams WHERE id = $1")
-        .bind(id)
-        .fetch_optional(executor)
-        .await
-}
-
 pub(crate) async fn count_task_types(pool: &PgPool, exam_id: &str) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT COUNT(*) FROM task_types WHERE exam_id = $1")
         .bind(exam_id)
@@ -47,10 +37,7 @@ pub(crate) async fn count_sessions(pool: &PgPool, exam_id: &str) -> Result<i64, 
 }
 
 pub(crate) async fn delete_by_id(pool: &PgPool, id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM exams WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    sqlx::query("DELETE FROM exams WHERE id = $1").bind(id).execute(pool).await?;
     Ok(())
 }
 
@@ -73,10 +60,7 @@ pub(crate) async fn find_title_by_id(
     pool: &PgPool,
     id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar("SELECT title FROM exams WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_scalar("SELECT title FROM exams WHERE id = $1").bind(id).fetch_optional(pool).await
 }
 
 pub(crate) async fn max_score_for_exam(pool: &PgPool, exam_id: &str) -> f64 {

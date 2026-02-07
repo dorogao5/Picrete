@@ -2,8 +2,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use sqlx::types::Json;
 use sqlx::PgPool;
-use time::{Duration, OffsetDateTime, PrimitiveDateTime};
-use uuid::Uuid;
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 use crate::core::state::AppState;
 use crate::db::models::{Exam, ExamSession, Submission, SubmissionImage};
@@ -207,7 +206,6 @@ pub(crate) async fn grade_submission(
 
 pub(crate) async fn process_completed_exams(state: &AppState) -> Result<()> {
     let now = now_primitive();
-    let one_hour_ago = now - Duration::hours(1);
 
     let exams = sqlx::query_as::<_, Exam>(
         "SELECT id, title, description, start_time, end_time, duration_minutes, timezone,
@@ -215,13 +213,11 @@ pub(crate) async fn process_completed_exams(state: &AppState) -> Result<()> {
                 status, created_by, created_at, updated_at, published_at, settings
          FROM exams
          WHERE status IN ($1, $2)
-           AND end_time <= $3
-           AND end_time >= $4",
+           AND end_time <= $3",
     )
     .bind(ExamStatus::Active)
     .bind(ExamStatus::Published)
     .bind(now)
-    .bind(one_hour_ago)
     .fetch_all(state.db())
     .await
     .context("Failed to fetch completed exams")?;
@@ -289,14 +285,12 @@ pub(crate) async fn close_expired_sessions(state: &AppState) -> Result<()> {
     #[derive(sqlx::FromRow)]
     struct SessionRow {
         id: String,
-        exam_id: String,
-        student_id: String,
         expires_at: PrimitiveDateTime,
         exam_end_time: Option<PrimitiveDateTime>,
     }
 
     let sessions = sqlx::query_as::<_, SessionRow>(
-        "SELECT s.id, s.exam_id, s.student_id, s.expires_at, e.end_time AS exam_end_time
+        "SELECT s.id, s.expires_at, e.end_time AS exam_end_time
          FROM exam_sessions s
          LEFT JOIN exams e ON e.id = s.exam_id
          WHERE s.status = $1",
@@ -307,7 +301,6 @@ pub(crate) async fn close_expired_sessions(state: &AppState) -> Result<()> {
     .context("Failed to fetch active sessions")?;
 
     let mut closed = 0;
-    let mut created = 0;
 
     for session in sessions {
         let hard_deadline = match session.exam_end_time {
@@ -337,50 +330,10 @@ pub(crate) async fn close_expired_sessions(state: &AppState) -> Result<()> {
         .context("Failed to expire session")?;
 
         closed += 1;
-
-        let submission_id =
-            sqlx::query_scalar::<_, String>("SELECT id FROM submissions WHERE session_id = $1")
-                .bind(&session.id)
-                .fetch_optional(state.db())
-                .await
-                .context("Failed to fetch submission")?;
-
-        if submission_id.is_none() {
-            let max_score: f64 = sqlx::query_scalar(
-                "SELECT COALESCE(SUM(max_score), 100) FROM task_types WHERE exam_id = $1",
-            )
-            .bind(&session.exam_id)
-            .fetch_one(state.db())
-            .await
-            .unwrap_or(100.0);
-
-            let now_dt = now_primitive();
-            sqlx::query(
-                "INSERT INTO submissions (id, session_id, student_id, status, max_score, submitted_at, created_at, updated_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-            )
-            .bind(Uuid::new_v4().to_string())
-            .bind(&session.id)
-            .bind(&session.student_id)
-            .bind(SubmissionStatus::Uploaded)
-            .bind(max_score)
-            .bind(hard_deadline)
-            .bind(now_dt)
-            .bind(now_dt)
-            .execute(state.db())
-            .await
-            .context("Failed to create empty submission for expired session")?;
-            created += 1;
-        }
     }
 
-    tracing::info!(
-        closed_sessions = closed,
-        created_empty_submissions = created,
-        "Closed expired sessions"
-    );
+    tracing::info!(closed_sessions = closed, "Closed expired sessions");
     metrics::counter!("expired_sessions_closed_total").increment(closed as u64);
-    metrics::counter!("empty_submissions_created_total").increment(created as u64);
 
     Ok(())
 }
@@ -389,7 +342,7 @@ pub(crate) async fn retry_failed_submissions(state: &AppState) -> Result<()> {
     let submissions = sqlx::query_scalar::<_, String>(
         "SELECT id FROM submissions
          WHERE status = $1
-           AND ai_retry_count < 3
+           AND COALESCE(ai_retry_count, 0) < 3
            AND ai_error IS NOT NULL",
     )
     .bind(SubmissionStatus::Flagged)
@@ -404,6 +357,7 @@ pub(crate) async fn retry_failed_submissions(state: &AppState) -> Result<()> {
         let updated = sqlx::query(
             "UPDATE submissions
              SET status = $1,
+                 ai_retry_count = COALESCE(ai_retry_count, 0) + 1,
                  ai_error = NULL,
                  ai_request_started_at = NULL,
                  updated_at = $2
@@ -514,9 +468,7 @@ async fn fetch_session(pool: &PgPool, session_id: &str) -> Result<Option<ExamSes
 }
 
 async fn fetch_exam(pool: &PgPool, exam_id: &str) -> Result<Option<Exam>> {
-    crate::repositories::exams::find_by_id(pool, exam_id)
-        .await
-        .context("Failed to fetch exam")
+    crate::repositories::exams::find_by_id(pool, exam_id).await.context("Failed to fetch exam")
 }
 
 async fn fetch_images(pool: &PgPool, submission_id: &str) -> Result<Vec<SubmissionImage>> {

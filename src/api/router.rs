@@ -107,8 +107,7 @@ fn build_cors_layer(settings: &Settings) -> CorsLayer {
         // Wildcard origin cannot be combined with allow_credentials
         base.allow_origin(Any)
     } else {
-        base.allow_credentials(true)
-            .allow_origin(AllowOrigin::list(origins))
+        base.allow_credentials(true).allow_origin(AllowOrigin::list(origins))
     }
 }
 

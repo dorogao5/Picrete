@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use serde::de::Error as _;
+use serde::{Deserialize, Serialize};
 use time::{
     format_description::well_known::Rfc3339, macros::format_description, OffsetDateTime,
     PrimitiveDateTime,
@@ -240,10 +240,9 @@ fn parse_offset_datetime_flexible(raw: &str) -> Option<OffsetDateTime> {
     }
 
     // Fallback for explicit format "YYYY-MM-DDTHH:MM[:SS]"
-    if let Ok(value) = PrimitiveDateTime::parse(
-        raw,
-        &format_description!("[year]-[month]-[day]T[hour]:[minute]"),
-    ) {
+    if let Ok(value) =
+        PrimitiveDateTime::parse(raw, &format_description!("[year]-[month]-[day]T[hour]:[minute]"))
+    {
         return Some(value.assume_utc());
     }
     if let Ok(value) = PrimitiveDateTime::parse(

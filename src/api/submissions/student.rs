@@ -82,25 +82,12 @@ pub(super) async fn enter_exam(
         return Err(ApiError::BadRequest("Exam has ended".to_string()));
     }
 
-    let existing = repositories::sessions::find_active(state.db(), &exam_id, &user.id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch session"))?;
-
-    if let Some(session) = existing {
-        return Ok(Json(super::helpers::session_to_response(session)));
-    }
-
-    let attempts = repositories::sessions::count_by_exam_and_student(state.db(), &exam_id, &user.id).await;
-
-    if attempts >= exam.max_attempts as i64 {
-        return Err(ApiError::BadRequest("Maximum attempts reached".to_string()));
-    }
-
     let task_types = repositories::task_types::list_by_exam(state.db(), &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch task types"))?;
 
     let seed = rand::random::<u32>();
+    let variant_seed = i32::from_ne_bytes(seed.to_ne_bytes());
     let mut rng = StdRng::seed_from_u64(seed as u64);
     let mut assignments = serde_json::Map::new();
 
@@ -118,6 +105,35 @@ pub(super) async fn enter_exam(
     let expires_at =
         if expires_candidate > exam.end_time { exam.end_time } else { expires_candidate };
 
+    let mut tx = state
+        .db()
+        .begin()
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to start transaction"))?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(&exam_id)
+        .bind(&user.id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to acquire session lock"))?;
+
+    let existing = repositories::sessions::find_active(&mut *tx, &exam_id, &user.id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch session"))?;
+
+    if let Some(session) = existing {
+        tx.commit().await.map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
+        return Ok(Json(super::helpers::session_to_response(session)));
+    }
+
+    let attempts =
+        repositories::sessions::count_by_exam_and_student(&mut *tx, &exam_id, &user.id).await;
+
+    if attempts >= exam.max_attempts as i64 {
+        return Err(ApiError::BadRequest("Maximum attempts reached".to_string()));
+    }
+
     let session_id = Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO exam_sessions (
@@ -128,7 +144,7 @@ pub(super) async fn enter_exam(
     .bind(&session_id)
     .bind(&exam_id)
     .bind(&user.id)
-    .bind(seed as i32)
+    .bind(variant_seed)
     .bind(serde_json::Value::Object(assignments.clone()))
     .bind(now)
     .bind(expires_at)
@@ -136,9 +152,11 @@ pub(super) async fn enter_exam(
     .bind((attempts + 1) as i32)
     .bind(now)
     .bind(now)
-    .execute(state.db())
+    .execute(&mut *tx)
     .await
     .map_err(|e| ApiError::internal(e, "Failed to create session"))?;
+
+    tx.commit().await.map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
 
     let session = repositories::sessions::fetch_one_by_id(state.db(), &session_id)
         .await
@@ -397,7 +415,7 @@ pub(super) async fn auto_save(
     let allowed = state.redis().rate_limit(&rate_key, 1, 5).await.unwrap_or(true);
 
     if !allowed {
-        return Err(ApiError::BadRequest("Auto-save rate limit exceeded".to_string()));
+        return Err(ApiError::TooManyRequests("Auto-save rate limit exceeded"));
     }
 
     let session = super::helpers::fetch_session(state.db(), &session_id).await?;
@@ -448,7 +466,7 @@ pub(super) async fn submit_exam(
         return Err(ApiError::BadRequest("Session is not active or has expired".to_string()));
     }
 
-    let mut submission = repositories::submissions::find_by_session(state.db(), &session_id)
+    let submission = repositories::submissions::find_by_session(state.db(), &session_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
 
@@ -468,10 +486,6 @@ pub(super) async fn submit_exam(
         )
         .await
         .map_err(|e| ApiError::internal(e, "Failed to create submission"))?;
-
-        submission = repositories::submissions::find_by_id(state.db(), &submission_id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
     }
 
     repositories::sessions::submit(state.db(), &session_id, now)
@@ -487,8 +501,10 @@ pub(super) async fn submit_exam(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to update submission"))?;
 
-    let submission =
-        submission.ok_or_else(|| ApiError::Internal("Submission missing".to_string()))?;
+    let submission = repositories::submissions::find_by_session(state.db(), &session_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to refresh submission"))?
+        .ok_or_else(|| ApiError::Internal("Submission missing".to_string()))?;
     let images = super::helpers::fetch_images(state.db(), &submission.id).await?;
     let scores = super::helpers::fetch_scores(state.db(), &submission.id).await?;
 
@@ -513,12 +529,9 @@ pub(super) async fn get_session_result(
         return Err(ApiError::BadRequest("No submission found for this session".to_string()));
     };
 
-    let attempts = repositories::sessions::count_by_exam_and_student(
-        state.db(),
-        &session.exam_id,
-        &user.id,
-    )
-    .await;
+    let attempts =
+        repositories::sessions::count_by_exam_and_student(state.db(), &session.exam_id, &user.id)
+            .await;
     let exam = super::helpers::fetch_exam(state.db(), &session.exam_id).await?;
 
     let images = super::helpers::fetch_images(state.db(), &submission.id).await?;

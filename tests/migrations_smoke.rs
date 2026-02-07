@@ -17,9 +17,7 @@ fn database_url() -> Option<String> {
     let password = std::env::var("POSTGRES_PASSWORD").unwrap_or_default();
     let db = std::env::var("POSTGRES_DB").unwrap_or_else(|_| "picrete_db".into());
 
-    Some(format!(
-        "postgresql://{user}:{password}@{server}:{port}/{db}"
-    ))
+    Some(format!("postgresql://{user}:{password}@{server}:{port}/{db}"))
 }
 
 #[tokio::test]

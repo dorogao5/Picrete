@@ -177,9 +177,7 @@ pub(crate) async fn enforce_deadline(
     if OffsetDateTime::now_utc().unix_timestamp() >= hard_deadline.assume_utc().unix_timestamp()
         && session.status == SessionStatus::Active
     {
-        repositories::sessions::update_status(pool, &session.id, SessionStatus::Expired)
-            .await
-            .ok();
+        repositories::sessions::update_status(pool, &session.id, SessionStatus::Expired).await.ok();
         return Ok((hard_deadline, SessionStatus::Expired));
     }
 

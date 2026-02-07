@@ -44,7 +44,9 @@ async fn signup(
     validate_isu(&payload.isu)?;
 
     let rate_key = format!("rl:signup:{}", payload.isu);
-    let allowed = state.redis().rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
+    let allowed = state
+        .redis()
+        .rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
         .await
         .unwrap_or(true);
     if !allowed {
@@ -124,7 +126,9 @@ async fn login(
     validate_isu(&payload.isu)?;
 
     let rate_key = format!("rl:login:{}", payload.isu);
-    let allowed = state.redis().rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
+    let allowed = state
+        .redis()
+        .rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
         .await
         .unwrap_or(true);
     if !allowed {
@@ -161,7 +165,9 @@ async fn token(
     validate_isu(&payload.username)?;
 
     let rate_key = format!("rl:token:{}", payload.username);
-    let allowed = state.redis().rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
+    let allowed = state
+        .redis()
+        .rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
         .await
         .unwrap_or(true);
     if !allowed {

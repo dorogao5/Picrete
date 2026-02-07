@@ -120,7 +120,10 @@ async fn prepare_db(settings: &Settings) -> PgPool {
 }
 
 pub(crate) async fn ensure_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
-    sqlx::migrate!("./migrations").run(pool).await.map_err(|e| sqlx::Error::Configuration(e.into()))?;
+    sqlx::migrate!("./migrations")
+        .run(pool)
+        .await
+        .map_err(|e| sqlx::Error::Configuration(e.into()))?;
     Ok(())
 }
 
@@ -210,4 +213,3 @@ pub(crate) async fn read_json(response: axum::response::Response<Body>) -> serde
         panic!("json parse: {err}; body: {body_text}");
     })
 }
-

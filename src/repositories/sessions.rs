@@ -12,28 +12,21 @@ pub(crate) async fn find_by_id(
     pool: &PgPool,
     id: &str,
 ) -> Result<Option<ExamSession>, sqlx::Error> {
-    sqlx::query_as::<_, ExamSession>(&format!(
-        "SELECT {COLUMNS} FROM exam_sessions WHERE id = $1"
-    ))
-    .bind(id)
-    .fetch_optional(pool)
-    .await
+    sqlx::query_as::<_, ExamSession>(&format!("SELECT {COLUMNS} FROM exam_sessions WHERE id = $1"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
 }
 
-pub(crate) async fn fetch_one_by_id(
-    pool: &PgPool,
-    id: &str,
-) -> Result<ExamSession, sqlx::Error> {
-    sqlx::query_as::<_, ExamSession>(&format!(
-        "SELECT {COLUMNS} FROM exam_sessions WHERE id = $1"
-    ))
-    .bind(id)
-    .fetch_one(pool)
-    .await
+pub(crate) async fn fetch_one_by_id(pool: &PgPool, id: &str) -> Result<ExamSession, sqlx::Error> {
+    sqlx::query_as::<_, ExamSession>(&format!("SELECT {COLUMNS} FROM exam_sessions WHERE id = $1"))
+        .bind(id)
+        .fetch_one(pool)
+        .await
 }
 
 pub(crate) async fn find_active(
-    pool: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     exam_id: &str,
     student_id: &str,
 ) -> Result<Option<ExamSession>, sqlx::Error> {
@@ -44,19 +37,19 @@ pub(crate) async fn find_active(
     .bind(exam_id)
     .bind(student_id)
     .bind(SessionStatus::Active)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
 }
 
 pub(crate) async fn count_by_exam_and_student(
-    pool: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     exam_id: &str,
     student_id: &str,
 ) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM exam_sessions WHERE exam_id = $1 AND student_id = $2")
         .bind(exam_id)
         .bind(student_id)
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await
         .unwrap_or(0)
 }

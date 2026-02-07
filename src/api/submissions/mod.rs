@@ -1,6 +1,6 @@
+pub(crate) mod helpers;
 mod student;
 mod teacher;
-pub(crate) mod helpers;
 
 use axum::{routing::get, routing::post, Router};
 use serde::Deserialize;

@@ -10,16 +10,11 @@ pub(crate) const COLUMNS: &str = "\
     ai_request_duration_seconds, ai_error, ai_retry_count, teacher_comments, reviewed_by, \
     reviewed_at, is_flagged, flag_reasons, anomaly_scores, files_hash, created_at, updated_at";
 
-pub(crate) async fn find_by_id(
-    pool: &PgPool,
-    id: &str,
-) -> Result<Option<Submission>, sqlx::Error> {
-    sqlx::query_as::<_, Submission>(&format!(
-        "SELECT {COLUMNS} FROM submissions WHERE id = $1"
-    ))
-    .bind(id)
-    .fetch_optional(pool)
-    .await
+pub(crate) async fn find_by_id(pool: &PgPool, id: &str) -> Result<Option<Submission>, sqlx::Error> {
+    sqlx::query_as::<_, Submission>(&format!("SELECT {COLUMNS} FROM submissions WHERE id = $1"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
 }
 
 pub(crate) async fn find_by_session(
@@ -34,16 +29,11 @@ pub(crate) async fn find_by_session(
     .await
 }
 
-pub(crate) async fn fetch_one_by_id(
-    pool: &PgPool,
-    id: &str,
-) -> Result<Submission, sqlx::Error> {
-    sqlx::query_as::<_, Submission>(&format!(
-        "SELECT {COLUMNS} FROM submissions WHERE id = $1"
-    ))
-    .bind(id)
-    .fetch_one(pool)
-    .await
+pub(crate) async fn fetch_one_by_id(pool: &PgPool, id: &str) -> Result<Submission, sqlx::Error> {
+    sqlx::query_as::<_, Submission>(&format!("SELECT {COLUMNS} FROM submissions WHERE id = $1"))
+        .bind(id)
+        .fetch_one(pool)
+        .await
 }
 
 pub(crate) async fn find_id_by_session(
@@ -90,12 +80,20 @@ pub(crate) async fn update_status_by_session(
     status: SubmissionStatus,
     submitted_at: PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE submissions SET status = $1, submitted_at = $2 WHERE session_id = $3")
-        .bind(status)
-        .bind(submitted_at)
-        .bind(session_id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE submissions
+         SET status = $1, submitted_at = $2, updated_at = $2
+         WHERE session_id = $3
+           AND status NOT IN ($4, $5, $6)",
+    )
+    .bind(status)
+    .bind(submitted_at)
+    .bind(session_id)
+    .bind(SubmissionStatus::Processing)
+    .bind(SubmissionStatus::Preliminary)
+    .bind(SubmissionStatus::Approved)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

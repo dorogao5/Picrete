@@ -58,9 +58,7 @@ async fn create_exam(
     state: axum::extract::State<AppState>,
     Json(payload): Json<ExamCreate>,
 ) -> Result<(axum::http::StatusCode, Json<ExamResponse>), ApiError> {
-    payload
-        .validate()
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     if payload.end_time <= payload.start_time {
         return Err(ApiError::BadRequest("end_time must be after start_time".to_string()));
@@ -82,7 +80,8 @@ async fn create_exam(
             max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
             status, created_by, created_at, updated_at, settings
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-        RETURNING {}", repositories::exams::COLUMNS,
+        RETURNING {}",
+        repositories::exams::COLUMNS,
     ))
     .bind(Uuid::new_v4().to_string())
     .bind(payload.title)
@@ -105,14 +104,9 @@ async fn create_exam(
     .map_err(|e| ApiError::internal(e, "Failed to create exam"))?;
 
     let task_types = insert_task_types(&mut tx, &exam.id, payload.task_types).await?;
-    tx.commit()
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
+    tx.commit().await.map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
 
-    Ok((
-        axum::http::StatusCode::CREATED,
-        Json(exam_to_response(exam, task_types)),
-    ))
+    Ok((axum::http::StatusCode::CREATED, Json(exam_to_response(exam, task_types))))
 }
 
 async fn list_exams(
@@ -177,17 +171,14 @@ async fn list_exams(
     let mut summaries = Vec::new();
 
     for row in rows {
-        let exam_id: String =
-            row.try_get("id").map_err(|e| ApiError::internal(e, "Bad row"))?;
-        let title: String =
-            row.try_get("title").map_err(|e| ApiError::internal(e, "Bad row"))?;
+        let exam_id: String = row.try_get("id").map_err(|e| ApiError::internal(e, "Bad row"))?;
+        let title: String = row.try_get("title").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let start_time: PrimitiveDateTime =
             row.try_get("start_time").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let end_time: PrimitiveDateTime =
             row.try_get("end_time").map_err(|e| ApiError::internal(e, "Bad row"))?;
-        let duration_minutes: i32 = row
-            .try_get("duration_minutes")
-            .map_err(|e| ApiError::internal(e, "Bad row"))?;
+        let duration_minutes: i32 =
+            row.try_get("duration_minutes").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let status: ExamStatus =
             row.try_get("status").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let task_count: i64 =
@@ -255,9 +246,7 @@ async fn update_exam(
         return Err(ApiError::Forbidden("You can only update your own exams"));
     }
 
-    payload
-        .validate()
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     // Validate time constraints when either start or end time is updated
     let effective_start = payload.start_time.unwrap_or(exam.start_time.assume_utc());
@@ -389,27 +378,29 @@ async fn publish_exam(
 
 async fn add_task_type(
     axum::extract::Path(exam_id): axum::extract::Path<String>,
-    CurrentTeacher(_teacher): CurrentTeacher,
+    CurrentTeacher(teacher): CurrentTeacher,
     state: axum::extract::State<AppState>,
     Json(payload): Json<TaskTypeCreate>,
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), ApiError> {
-    payload
-        .validate()
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
+
+    let Some(exam) = exam else {
+        return Err(ApiError::NotFound("Exam not found".to_string()));
+    };
+
+    if exam.created_by != teacher.id {
+        return Err(ApiError::Forbidden("You can only add task types to your own exams"));
+    }
 
     let mut tx = state
         .db()
         .begin()
         .await
         .map_err(|e| ApiError::internal(e, "Failed to start transaction"))?;
-
-    let exam_exists = repositories::exams::exists_by_id(&mut *tx, &exam_id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
-
-    if exam_exists.is_none() {
-        return Err(ApiError::NotFound("Exam not found".to_string()));
-    }
 
     let now = now_primitive();
     let task_type_id = Uuid::new_v4().to_string();
@@ -440,9 +431,7 @@ async fn add_task_type(
     .map_err(|e| ApiError::internal(e, "Failed to create task type"))?;
 
     insert_variants(&mut tx, &task_type_id, payload.variants).await?;
-    tx.commit()
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
+    tx.commit().await.map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
 
     Ok((
         axum::http::StatusCode::CREATED,
@@ -456,9 +445,21 @@ async fn add_task_type(
 async fn list_exam_submissions(
     axum::extract::Path(exam_id): axum::extract::Path<String>,
     Query(params): Query<ListExamSubmissionsQuery>,
-    CurrentTeacher(_teacher): CurrentTeacher,
+    CurrentTeacher(teacher): CurrentTeacher,
     state: axum::extract::State<AppState>,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
+
+    let Some(exam) = exam else {
+        return Err(ApiError::NotFound("Exam not found".to_string()));
+    };
+
+    if exam.created_by != teacher.id {
+        return Err(ApiError::Forbidden("You can only view submissions for your own exams"));
+    }
+
     let mut query = String::from(
         "SELECT s.id, s.student_id, u.isu, u.full_name, s.submitted_at, s.status,
                 s.ai_score, s.final_score, s.max_score
@@ -836,5 +837,98 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "response: {list}");
         let items = list.as_array().expect("exam list");
         assert!(items.iter().any(|item| item["id"] == exam_id));
+    }
+
+    #[tokio::test]
+    async fn teacher_cannot_access_other_teachers_exam_management_endpoints() {
+        let ctx = test_support::setup_test_context().await;
+
+        let owner = test_support::insert_user(
+            ctx.state.db(),
+            "000102",
+            "Owner Teacher",
+            UserRole::Teacher,
+            "teacher-pass",
+        )
+        .await;
+        let intruder = test_support::insert_user(
+            ctx.state.db(),
+            "000103",
+            "Intruder Teacher",
+            UserRole::Teacher,
+            "teacher-pass",
+        )
+        .await;
+
+        let owner_token = test_support::bearer_token(&owner.id, ctx.state.settings());
+        let intruder_token = test_support::bearer_token(&intruder.id, ctx.state.settings());
+
+        let response = ctx
+            .app
+            .clone()
+            .oneshot(test_support::json_request(
+                Method::POST,
+                "/api/v1/exams",
+                Some(&owner_token),
+                Some(exam_payload()),
+            ))
+            .await
+            .expect("create exam");
+        let status = response.status();
+        let created = test_support::read_json(response).await;
+        assert_eq!(status, StatusCode::CREATED, "response: {created}");
+        let exam_id = created["id"].as_str().expect("exam id");
+
+        let task_type_payload = json!({
+            "title": "Task 2",
+            "description": "Unauthorized add",
+            "order_index": 2,
+            "max_score": 5.0,
+            "rubric": {"criteria": []},
+            "difficulty": "easy",
+            "taxonomy_tags": [],
+            "formulas": [],
+            "units": [],
+            "validation_rules": {},
+            "variants": [
+                {
+                    "content": "Unauthorized variant",
+                    "parameters": {},
+                    "reference_solution": null,
+                    "reference_answer": null,
+                    "answer_tolerance": 0.01,
+                    "attachments": []
+                }
+            ]
+        });
+
+        let response = ctx
+            .app
+            .clone()
+            .oneshot(test_support::json_request(
+                Method::POST,
+                &format!("/api/v1/exams/{exam_id}/task-types"),
+                Some(&intruder_token),
+                Some(task_type_payload),
+            ))
+            .await
+            .expect("add task type as intruder");
+        let status = response.status();
+        let body = test_support::read_json(response).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "response: {body}");
+
+        let response = ctx
+            .app
+            .oneshot(test_support::json_request(
+                Method::GET,
+                &format!("/api/v1/exams/{exam_id}/submissions"),
+                Some(&intruder_token),
+                None,
+            ))
+            .await
+            .expect("list submissions as intruder");
+        let status = response.status();
+        let body = test_support::read_json(response).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "response: {body}");
     }
 }
