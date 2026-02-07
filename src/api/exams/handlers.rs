@@ -237,7 +237,7 @@ pub(super) async fn update_exam(
             start_time = COALESCE($3, start_time),
             end_time = COALESCE($4, end_time),
             duration_minutes = COALESCE($5, duration_minutes),
-            settings = COALESCE($6, settings),
+            settings = COALESCE($6::jsonb, settings),
             updated_at = $7
          WHERE id = $8",
     )
