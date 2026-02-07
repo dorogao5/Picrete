@@ -154,7 +154,7 @@ impl AiGradingService {
                         last_error = None;
                         break;
                     }
-                    last_error = Some(anyhow::anyhow!("OpenAI API error: {}", body));
+                    last_error = Some(anyhow::anyhow!("OpenAI API error: {body}"));
                 }
                 Err(err) => {
                     last_error = Some(anyhow::anyhow!(err).context("Failed to call OpenAI API"));

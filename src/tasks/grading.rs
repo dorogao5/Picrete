@@ -6,7 +6,7 @@ use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 use crate::core::state::AppState;
-use crate::db::models::{Exam, ExamSession, Submission, SubmissionImage, TaskType, TaskVariant};
+use crate::db::models::{Exam, ExamSession, Submission, SubmissionImage};
 use crate::db::types::{ExamStatus, SessionStatus, SubmissionStatus};
 use crate::services::ai_grading::{AiGradingService, GradeRequest};
 
@@ -437,15 +437,9 @@ async fn build_task_prompt(
     exam: &Exam,
     session: &ExamSession,
 ) -> Result<(String, String, Value, f64)> {
-    let task_types = sqlx::query_as::<_, TaskType>(
-        "SELECT id, exam_id, title, description, order_index, max_score, rubric, difficulty,
-                taxonomy_tags, formulas, units, validation_rules, created_at, updated_at
-         FROM task_types WHERE exam_id = $1 ORDER BY order_index",
-    )
-    .bind(&exam.id)
-    .fetch_all(pool)
-    .await
-    .context("Failed to fetch task types")?;
+    let task_types = crate::repositories::task_types::list_by_exam(pool, &exam.id)
+        .await
+        .context("Failed to fetch task types")?;
 
     let assignments = &session.variant_assignments.0;
     let mut descriptions = Vec::new();
@@ -455,15 +449,9 @@ async fn build_task_prompt(
 
     for task_type in task_types {
         if let Some(variant_id) = assignments.get(&task_type.id) {
-            let variant = sqlx::query_as::<_, TaskVariant>(
-                "SELECT id, task_type_id, content, parameters, reference_solution, reference_answer,
-                        answer_tolerance, attachments, created_at
-                 FROM task_variants WHERE id = $1",
-            )
-            .bind(variant_id)
-            .fetch_optional(pool)
-            .await
-            .context("Failed to fetch variant")?;
+            let variant = crate::repositories::task_types::find_variant_by_id(pool, variant_id)
+                .await
+                .context("Failed to fetch variant")?;
 
             if let Some(variant) = variant {
                 descriptions.push(format!(
@@ -514,64 +502,27 @@ async fn build_task_prompt(
 }
 
 async fn fetch_submission(pool: &PgPool, submission_id: &str) -> Result<Option<Submission>> {
-    let submission = sqlx::query_as::<_, Submission>(
-        "SELECT id, session_id, student_id, submitted_at, status, ai_score, final_score, max_score,
-                ai_analysis, ai_comments, ai_processed_at, ai_request_started_at, ai_request_completed_at,
-                ai_request_duration_seconds, ai_error, ai_retry_count, teacher_comments, reviewed_by,
-                reviewed_at, is_flagged, flag_reasons, anomaly_scores, files_hash, created_at, updated_at
-         FROM submissions WHERE id = $1",
-    )
-    .bind(submission_id)
-    .fetch_optional(pool)
-    .await
-    .context("Failed to fetch submission")?;
-
-    Ok(submission)
+    crate::repositories::submissions::find_by_id(pool, submission_id)
+        .await
+        .context("Failed to fetch submission")
 }
 
 async fn fetch_session(pool: &PgPool, session_id: &str) -> Result<Option<ExamSession>> {
-    let session = sqlx::query_as::<_, ExamSession>(
-        "SELECT id, exam_id, student_id, variant_seed, variant_assignments,
-                started_at, submitted_at, expires_at, status, attempt_number,
-                ip_address, user_agent, last_auto_save, auto_save_data, created_at, updated_at
-         FROM exam_sessions WHERE id = $1",
-    )
-    .bind(session_id)
-    .fetch_optional(pool)
-    .await
-    .context("Failed to fetch session")?;
-
-    Ok(session)
+    crate::repositories::sessions::find_by_id(pool, session_id)
+        .await
+        .context("Failed to fetch session")
 }
 
 async fn fetch_exam(pool: &PgPool, exam_id: &str) -> Result<Option<Exam>> {
-    let exam = sqlx::query_as::<_, Exam>(
-        "SELECT id, title, description, start_time, end_time, duration_minutes, timezone,
-                max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
-                status, created_by, created_at, updated_at, published_at, settings
-         FROM exams WHERE id = $1",
-    )
-    .bind(exam_id)
-    .fetch_optional(pool)
-    .await
-    .context("Failed to fetch exam")?;
-
-    Ok(exam)
+    crate::repositories::exams::find_by_id(pool, exam_id)
+        .await
+        .context("Failed to fetch exam")
 }
 
 async fn fetch_images(pool: &PgPool, submission_id: &str) -> Result<Vec<SubmissionImage>> {
-    let images = sqlx::query_as::<_, SubmissionImage>(
-        "SELECT id, submission_id, filename, file_path, file_size, mime_type,
-                is_processed, ocr_text, quality_score, order_index, perceptual_hash,
-                uploaded_at, processed_at
-         FROM submission_images WHERE submission_id = $1",
-    )
-    .bind(submission_id)
-    .fetch_all(pool)
-    .await
-    .context("Failed to fetch images")?;
-
-    Ok(images)
+    crate::repositories::images::list_by_submission(pool, submission_id)
+        .await
+        .context("Failed to fetch images")
 }
 
 async fn flag_submission(
@@ -586,9 +537,8 @@ async fn flag_submission(
         if increment_retry { "ai_retry_count = COALESCE(ai_retry_count,0) + 1," } else { "" };
     let query = format!(
         "UPDATE submissions SET status = $1, ai_error = $2, is_flagged = TRUE, flag_reasons = $3,
-            ai_request_completed_at = $4, ai_request_duration_seconds = $5, {retry} updated_at = $6
+            ai_request_completed_at = $4, ai_request_duration_seconds = $5, {retry_expr} updated_at = $6
          WHERE id = $7",
-        retry = retry_expr,
     );
 
     sqlx::query(&query)

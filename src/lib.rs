@@ -1,12 +1,10 @@
 pub(crate) mod api;
 pub(crate) mod core;
 pub(crate) mod db;
-pub(crate) mod models;
+pub(crate) mod repositories;
 pub(crate) mod schemas;
 pub(crate) mod services;
 pub(crate) mod tasks;
-
-mod prelude;
 
 #[cfg(test)]
 mod test_support;

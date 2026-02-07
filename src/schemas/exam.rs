@@ -1,16 +1,16 @@
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use serde::de::Error as _;
 use time::{
     format_description::well_known::Rfc3339, macros::format_description, OffsetDateTime,
     PrimitiveDateTime,
 };
+use validator::Validate;
 
 use crate::db::types::{DifficultyLevel, ExamStatus};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub(crate) struct TaskVariantCreate {
+    #[validate(length(min = 1, message = "content must not be empty"))]
     pub(crate) content: String,
     #[serde(default)]
     pub(crate) parameters: serde_json::Value,
@@ -22,6 +22,7 @@ pub(crate) struct TaskVariantCreate {
     pub(crate) reference_answer: Option<String>,
     #[serde(default = "default_tolerance")]
     #[serde(alias = "answerTolerance")]
+    #[validate(range(min = 0.0, message = "answer_tolerance must be non-negative"))]
     pub(crate) answer_tolerance: f64,
     #[serde(default)]
     pub(crate) attachments: Vec<String>,
@@ -40,13 +41,16 @@ pub(crate) struct TaskVariantResponse {
     pub(crate) created_at: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub(crate) struct TaskTypeCreate {
+    #[validate(length(min = 1, message = "title must not be empty"))]
     pub(crate) title: String,
     pub(crate) description: String,
     #[serde(alias = "orderIndex")]
+    #[validate(range(min = 0, message = "order_index must be non-negative"))]
     pub(crate) order_index: i32,
     #[serde(alias = "maxScore")]
+    #[validate(range(exclusive_min = 0.0, message = "max_score must be positive"))]
     pub(crate) max_score: f64,
     pub(crate) rubric: serde_json::Value,
     #[serde(default = "default_difficulty")]
@@ -62,6 +66,7 @@ pub(crate) struct TaskTypeCreate {
     #[serde(alias = "validationRules")]
     pub(crate) validation_rules: serde_json::Value,
     #[serde(default)]
+    #[validate(nested)]
     pub(crate) variants: Vec<TaskVariantCreate>,
 }
 
@@ -84,8 +89,9 @@ pub(crate) struct TaskTypeResponse {
     pub(crate) variants: Vec<TaskVariantResponse>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub(crate) struct ExamCreate {
+    #[validate(length(min = 1, message = "title must not be empty"))]
     pub(crate) title: String,
     #[serde(default)]
     pub(crate) description: Option<String>,
@@ -94,31 +100,37 @@ pub(crate) struct ExamCreate {
     #[serde(alias = "endTime", deserialize_with = "deserialize_offset_datetime_flexible")]
     pub(crate) end_time: OffsetDateTime,
     #[serde(alias = "durationMinutes")]
+    #[validate(range(min = 1, message = "duration_minutes must be positive"))]
     pub(crate) duration_minutes: i32,
     #[serde(default = "default_timezone")]
     pub(crate) timezone: String,
     #[serde(default = "default_max_attempts")]
     #[serde(alias = "maxAttempts")]
+    #[validate(range(min = 1, message = "max_attempts must be positive"))]
     pub(crate) max_attempts: i32,
     #[serde(default)]
     #[serde(alias = "allowBreaks")]
     pub(crate) allow_breaks: bool,
     #[serde(default)]
     #[serde(alias = "breakDurationMinutes")]
+    #[validate(range(min = 0, message = "break_duration_minutes must be non-negative"))]
     pub(crate) break_duration_minutes: i32,
     #[serde(default = "default_auto_save_interval")]
     #[serde(alias = "autoSaveInterval")]
+    #[validate(range(min = 1, message = "auto_save_interval must be positive"))]
     pub(crate) auto_save_interval: i32,
     #[serde(default)]
     pub(crate) settings: serde_json::Value,
     #[serde(default)]
     #[serde(alias = "taskTypes")]
+    #[validate(nested)]
     pub(crate) task_types: Vec<TaskTypeCreate>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub(crate) struct ExamUpdate {
     #[serde(default)]
+    #[validate(length(min = 1, message = "title must not be empty"))]
     pub(crate) title: Option<String>,
     #[serde(default)]
     pub(crate) description: Option<String>,
@@ -136,6 +148,7 @@ pub(crate) struct ExamUpdate {
     pub(crate) end_time: Option<OffsetDateTime>,
     #[serde(default)]
     #[serde(alias = "durationMinutes")]
+    #[validate(range(min = 1, message = "duration_minutes must be positive"))]
     pub(crate) duration_minutes: Option<i32>,
     // Status is intentionally omitted — use dedicated /publish endpoint
     #[serde(default)]
@@ -177,6 +190,7 @@ pub(crate) struct ExamSummaryResponse {
     pub(crate) pending_count: i64,
 }
 
+#[allow(dead_code)]
 pub(crate) fn format_offset(value: OffsetDateTime) -> String {
     value.format(&Rfc3339).unwrap_or_else(|_| value.to_string())
 }

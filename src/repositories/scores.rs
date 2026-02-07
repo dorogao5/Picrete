@@ -1,0 +1,19 @@
+use sqlx::PgPool;
+
+use crate::db::models::SubmissionScore;
+
+pub(crate) const COLUMNS: &str = "\
+    id, submission_id, task_type_id, criterion_name, criterion_description, \
+    ai_score, final_score, max_score, ai_comment, teacher_comment, created_at, updated_at";
+
+pub(crate) async fn list_by_submission(
+    pool: &PgPool,
+    submission_id: &str,
+) -> Result<Vec<SubmissionScore>, sqlx::Error> {
+    sqlx::query_as::<_, SubmissionScore>(&format!(
+        "SELECT {COLUMNS} FROM submission_scores WHERE submission_id = $1"
+    ))
+    .bind(submission_id)
+    .fetch_all(pool)
+    .await
+}

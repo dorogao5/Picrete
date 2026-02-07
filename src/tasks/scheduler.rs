@@ -11,12 +11,13 @@ pub(crate) async fn run(state: AppState) -> Result<()> {
     let ai = AiGradingService::from_settings(state.settings())?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let mut handles = Vec::new();
-    handles.push(tokio::spawn(grading_worker(state.clone(), ai.clone(), shutdown_rx.clone())));
-    handles.push(tokio::spawn(process_completed_loop(state.clone(), shutdown_rx.clone())));
-    handles.push(tokio::spawn(close_expired_loop(state.clone(), shutdown_rx.clone())));
-    handles.push(tokio::spawn(retry_failed_loop(state.clone(), shutdown_rx.clone())));
-    handles.push(tokio::spawn(cleanup_loop(shutdown_rx.clone())));
+    let handles = vec![
+        tokio::spawn(grading_worker(state.clone(), ai.clone(), shutdown_rx.clone())),
+        tokio::spawn(process_completed_loop(state.clone(), shutdown_rx.clone())),
+        tokio::spawn(close_expired_loop(state.clone(), shutdown_rx.clone())),
+        tokio::spawn(retry_failed_loop(state.clone(), shutdown_rx.clone())),
+        tokio::spawn(cleanup_loop(shutdown_rx.clone())),
+    ];
 
     crate::core::shutdown::shutdown_signal().await;
     let _ = shutdown_tx.send(true);
@@ -100,7 +101,7 @@ async fn retry_failed_loop(state: AppState, mut shutdown: watch::Receiver<bool>)
 
 async fn cleanup_loop(mut shutdown: watch::Receiver<bool>) {
     loop {
-        let sleep_for = duration_until(Time::from_hms(3, 0, 0).unwrap_or_else(|_| Time::MIDNIGHT));
+        let sleep_for = duration_until(Time::from_hms(3, 0, 0).unwrap_or(Time::MIDNIGHT));
         tokio::select! {
             _ = shutdown.changed() => break,
             _ = sleep(sleep_for) => {

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub(crate) mod models;
 pub(crate) mod types;
 

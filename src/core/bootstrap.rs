@@ -1,12 +1,10 @@
-#![allow(dead_code)]
-
 use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 use crate::core::security;
 use crate::core::state::AppState;
-use crate::db::models::User;
 use crate::db::types::UserRole;
+use crate::repositories;
 
 pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
     let admin = state.settings().admin();
@@ -17,15 +15,7 @@ pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
 
     let isu = &admin.first_superuser_isu;
 
-    let user = sqlx::query_as::<_, User>(
-        "SELECT id, isu, hashed_password, full_name, role, is_active, is_verified,
-                pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at,
-                terms_version, privacy_version, created_at, updated_at
-         FROM users WHERE isu = $1",
-    )
-    .bind(isu)
-    .fetch_optional(state.db())
-    .await?;
+    let user = repositories::users::find_by_isu(state.db(), isu).await?;
 
     let now_offset = OffsetDateTime::now_utc();
     let now_primitive = primitive_now_utc(now_offset);

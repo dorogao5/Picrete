@@ -3,11 +3,14 @@ use serde::Deserialize;
 use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
 use uuid::Uuid;
 
+use validator::Validate;
+
 use crate::api::errors::ApiError;
 use crate::api::guards::{CurrentTeacher, CurrentUser};
 use crate::core::state::AppState;
-use crate::db::models::{Exam, TaskType, TaskVariant};
+use crate::db::models::Exam;
 use crate::db::types::{ExamStatus, SubmissionStatus, UserRole};
+use crate::repositories;
 use crate::schemas::exam::{
     format_primitive, ExamCreate, ExamResponse, ExamSummaryResponse, ExamUpdate, TaskTypeCreate,
     TaskTypeResponse, TaskVariantCreate, TaskVariantResponse,
@@ -55,11 +58,12 @@ async fn create_exam(
     state: axum::extract::State<AppState>,
     Json(payload): Json<ExamCreate>,
 ) -> Result<(axum::http::StatusCode, Json<ExamResponse>), ApiError> {
+    payload
+        .validate()
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     if payload.end_time <= payload.start_time {
         return Err(ApiError::BadRequest("end_time must be after start_time".to_string()));
-    }
-    if payload.duration_minutes <= 0 {
-        return Err(ApiError::BadRequest("duration_minutes must be positive".to_string()));
     }
 
     let start_time = to_primitive_utc(payload.start_time);
@@ -70,18 +74,16 @@ async fn create_exam(
         .db()
         .begin()
         .await
-        .map_err(|_| ApiError::Internal("Failed to start transaction".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to start transaction"))?;
 
-    let exam = sqlx::query_as::<_, Exam>(
+    let exam = sqlx::query_as::<_, Exam>(&format!(
         "INSERT INTO exams (
             id, title, description, start_time, end_time, duration_minutes, timezone,
             max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
             status, created_by, created_at, updated_at, settings
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-        RETURNING id, title, description, start_time, end_time, duration_minutes, timezone,
-            max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
-            status, created_by, created_at, updated_at, published_at, settings",
-    )
+        RETURNING {}", repositories::exams::COLUMNS,
+    ))
     .bind(Uuid::new_v4().to_string())
     .bind(payload.title)
     .bind(payload.description)
@@ -100,35 +102,16 @@ async fn create_exam(
     .bind(payload.settings)
     .fetch_one(&mut *tx)
     .await
-    .map_err(|_| ApiError::Internal("Failed to create exam".to_string()))?;
+    .map_err(|e| ApiError::internal(e, "Failed to create exam"))?;
 
     let task_types = insert_task_types(&mut tx, &exam.id, payload.task_types).await?;
     tx.commit()
         .await
-        .map_err(|_| ApiError::Internal("Failed to commit transaction".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
 
     Ok((
         axum::http::StatusCode::CREATED,
-        Json(ExamResponse {
-            id: exam.id,
-            title: exam.title,
-            description: exam.description,
-            start_time: format_primitive(exam.start_time),
-            end_time: format_primitive(exam.end_time),
-            duration_minutes: exam.duration_minutes,
-            timezone: exam.timezone,
-            max_attempts: exam.max_attempts,
-            allow_breaks: exam.allow_breaks,
-            break_duration_minutes: exam.break_duration_minutes,
-            auto_save_interval: exam.auto_save_interval,
-            settings: exam.settings.0,
-            status: exam.status,
-            created_by: exam.created_by,
-            created_at: format_primitive(exam.created_at),
-            updated_at: format_primitive(exam.updated_at),
-            published_at: exam.published_at.map(format_primitive),
-            task_types,
-        }),
+        Json(exam_to_response(exam, task_types)),
     ))
 }
 
@@ -189,30 +172,30 @@ async fn list_exams(
         .build()
         .fetch_all(state.db())
         .await
-        .map_err(|_| ApiError::Internal("Failed to list exams".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to list exams"))?;
 
     let mut summaries = Vec::new();
 
     for row in rows {
         let exam_id: String =
-            row.try_get("id").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("id").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let title: String =
-            row.try_get("title").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("title").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let start_time: PrimitiveDateTime =
-            row.try_get("start_time").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("start_time").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let end_time: PrimitiveDateTime =
-            row.try_get("end_time").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("end_time").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let duration_minutes: i32 = row
             .try_get("duration_minutes")
-            .map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            .map_err(|e| ApiError::internal(e, "Bad row"))?;
         let status: ExamStatus =
-            row.try_get("status").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("status").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let task_count: i64 =
-            row.try_get("task_count").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("task_count").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let student_count: i64 =
-            row.try_get("student_count").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("student_count").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let pending_count: i64 =
-            row.try_get("pending_count").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("pending_count").map_err(|e| ApiError::internal(e, "Bad row"))?;
 
         summaries.push(ExamSummaryResponse {
             id: exam_id,
@@ -235,19 +218,12 @@ async fn get_exam(
     CurrentUser(user): CurrentUser,
     state: axum::extract::State<AppState>,
 ) -> Result<Json<ExamResponse>, ApiError> {
-    let exam = sqlx::query_as::<_, Exam>(
-        "SELECT id, title, description, start_time, end_time, duration_minutes, timezone,
-                max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
-                status, created_by, created_at, updated_at, published_at, settings
-         FROM exams WHERE id = $1",
-    )
-    .bind(&exam_id)
-    .fetch_optional(state.db())
-    .await
-    .map_err(|_| ApiError::Internal("Failed to fetch exam".to_string()))?;
+    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
 
     let Some(exam) = exam else {
-        return Err(ApiError::BadRequest("Exam not found".to_string()));
+        return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
     if matches!(user.role, UserRole::Student)
@@ -258,26 +234,7 @@ async fn get_exam(
 
     let task_types = fetch_task_types(state.db(), &exam.id).await?;
 
-    Ok(Json(ExamResponse {
-        id: exam.id,
-        title: exam.title,
-        description: exam.description,
-        start_time: format_primitive(exam.start_time),
-        end_time: format_primitive(exam.end_time),
-        duration_minutes: exam.duration_minutes,
-        timezone: exam.timezone,
-        max_attempts: exam.max_attempts,
-        allow_breaks: exam.allow_breaks,
-        break_duration_minutes: exam.break_duration_minutes,
-        auto_save_interval: exam.auto_save_interval,
-        settings: exam.settings.0,
-        status: exam.status,
-        created_by: exam.created_by,
-        created_at: format_primitive(exam.created_at),
-        updated_at: format_primitive(exam.updated_at),
-        published_at: exam.published_at.map(format_primitive),
-        task_types,
-    }))
+    Ok(Json(exam_to_response(exam, task_types)))
 }
 
 async fn update_exam(
@@ -286,36 +243,27 @@ async fn update_exam(
     state: axum::extract::State<AppState>,
     Json(payload): Json<ExamUpdate>,
 ) -> Result<Json<ExamResponse>, ApiError> {
-    let exam = sqlx::query_as::<_, Exam>(
-        "SELECT id, title, description, start_time, end_time, duration_minutes, timezone,
-                max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
-                status, created_by, created_at, updated_at, published_at, settings
-         FROM exams WHERE id = $1",
-    )
-    .bind(&exam_id)
-    .fetch_optional(state.db())
-    .await
-    .map_err(|_| ApiError::Internal("Failed to fetch exam".to_string()))?;
+    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
 
     let Some(exam) = exam else {
-        return Err(ApiError::BadRequest("Exam not found".to_string()));
+        return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
     if exam.created_by != teacher.id {
         return Err(ApiError::Forbidden("You can only update your own exams"));
     }
 
+    payload
+        .validate()
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     // Validate time constraints when either start or end time is updated
     let effective_start = payload.start_time.unwrap_or(exam.start_time.assume_utc());
     let effective_end = payload.end_time.unwrap_or(exam.end_time.assume_utc());
     if effective_end <= effective_start {
         return Err(ApiError::BadRequest("end_time must be after start_time".to_string()));
-    }
-
-    if let Some(dm) = payload.duration_minutes {
-        if dm <= 0 {
-            return Err(ApiError::BadRequest("duration_minutes must be positive".to_string()));
-        }
     }
 
     let now = now_primitive();
@@ -343,41 +291,15 @@ async fn update_exam(
     .bind(&exam_id)
     .execute(state.db())
     .await
-    .map_err(|_| ApiError::Internal("Failed to update exam".to_string()))?;
+    .map_err(|e| ApiError::internal(e, "Failed to update exam"))?;
 
-    let updated = sqlx::query_as::<_, Exam>(
-        "SELECT id, title, description, start_time, end_time, duration_minutes, timezone,
-                max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
-                status, created_by, created_at, updated_at, published_at, settings
-         FROM exams WHERE id = $1",
-    )
-    .bind(&exam_id)
-    .fetch_one(state.db())
-    .await
-    .map_err(|_| ApiError::Internal("Failed to fetch updated exam".to_string()))?;
+    let updated = repositories::exams::fetch_one_by_id(state.db(), &exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch updated exam"))?;
 
     let task_types = fetch_task_types(state.db(), &updated.id).await?;
 
-    Ok(Json(ExamResponse {
-        id: updated.id,
-        title: updated.title,
-        description: updated.description,
-        start_time: format_primitive(updated.start_time),
-        end_time: format_primitive(updated.end_time),
-        duration_minutes: updated.duration_minutes,
-        timezone: updated.timezone,
-        max_attempts: updated.max_attempts,
-        allow_breaks: updated.allow_breaks,
-        break_duration_minutes: updated.break_duration_minutes,
-        auto_save_interval: updated.auto_save_interval,
-        settings: updated.settings.0,
-        status: updated.status,
-        created_by: updated.created_by,
-        created_at: format_primitive(updated.created_at),
-        updated_at: format_primitive(updated.updated_at),
-        published_at: updated.published_at.map(format_primitive),
-        task_types,
-    }))
+    Ok(Json(exam_to_response(updated, task_types)))
 }
 
 async fn delete_exam(
@@ -386,31 +308,21 @@ async fn delete_exam(
     CurrentTeacher(teacher): CurrentTeacher,
     state: axum::extract::State<AppState>,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    let exam = sqlx::query_as::<_, Exam>(
-        "SELECT id, title, description, start_time, end_time, duration_minutes, timezone,
-                max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
-                status, created_by, created_at, updated_at, published_at, settings
-         FROM exams WHERE id = $1",
-    )
-    .bind(&exam_id)
-    .fetch_optional(state.db())
-    .await
-    .map_err(|_| ApiError::Internal("Failed to fetch exam".to_string()))?;
+    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
 
     let Some(exam) = exam else {
-        return Err(ApiError::BadRequest("Exam not found".to_string()));
+        return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
     if exam.created_by != teacher.id {
         return Err(ApiError::Forbidden("You can only delete your own exams"));
     }
 
-    let submissions_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM exam_sessions WHERE exam_id = $1")
-            .bind(&exam_id)
-            .fetch_one(state.db())
-            .await
-            .unwrap_or(0);
+    let submissions_count = repositories::exams::count_sessions(state.db(), &exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to count sessions"))?;
 
     if submissions_count > 0 && !params.force_delete {
         return Err(ApiError::BadRequest(format!(
@@ -418,11 +330,9 @@ async fn delete_exam(
         )));
     }
 
-    sqlx::query("DELETE FROM exams WHERE id = $1")
-        .bind(&exam_id)
-        .execute(state.db())
+    repositories::exams::delete_by_id(state.db(), &exam_id)
         .await
-        .map_err(|_| ApiError::Internal("Failed to delete exam".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to delete exam"))?;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -432,19 +342,12 @@ async fn publish_exam(
     CurrentTeacher(teacher): CurrentTeacher,
     state: axum::extract::State<AppState>,
 ) -> Result<Json<ExamResponse>, ApiError> {
-    let exam = sqlx::query_as::<_, Exam>(
-        "SELECT id, title, description, start_time, end_time, duration_minutes, timezone,
-                max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
-                status, created_by, created_at, updated_at, published_at, settings
-         FROM exams WHERE id = $1",
-    )
-    .bind(&exam_id)
-    .fetch_optional(state.db())
-    .await
-    .map_err(|_| ApiError::Internal("Failed to fetch exam".to_string()))?;
+    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
 
     let Some(exam) = exam else {
-        return Err(ApiError::BadRequest("Exam not found".to_string()));
+        return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
     if exam.created_by != teacher.id {
@@ -455,36 +358,22 @@ async fn publish_exam(
         return Err(ApiError::BadRequest("Exam is not in draft status".to_string()));
     }
 
-    let task_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM task_types WHERE exam_id = $1")
-        .bind(&exam_id)
-        .fetch_one(state.db())
+    let task_count = repositories::exams::count_task_types(state.db(), &exam_id)
         .await
-        .unwrap_or(0);
+        .map_err(|e| ApiError::internal(e, "Failed to count task types"))?;
 
     if task_count == 0 {
         return Err(ApiError::BadRequest("Exam must have at least one task type".to_string()));
     }
 
     let now = now_primitive();
-    sqlx::query("UPDATE exams SET status = $1, published_at = $2, updated_at = $3 WHERE id = $4")
-        .bind(ExamStatus::Published)
-        .bind(now)
-        .bind(now)
-        .bind(&exam_id)
-        .execute(state.db())
+    repositories::exams::publish(state.db(), &exam_id, now)
         .await
-        .map_err(|_| ApiError::Internal("Failed to publish exam".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to publish exam"))?;
 
-    let updated = sqlx::query_as::<_, Exam>(
-        "SELECT id, title, description, start_time, end_time, duration_minutes, timezone,
-                max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
-                status, created_by, created_at, updated_at, published_at, settings
-         FROM exams WHERE id = $1",
-    )
-    .bind(&exam_id)
-    .fetch_one(state.db())
-    .await
-    .map_err(|_| ApiError::Internal("Failed to fetch updated exam".to_string()))?;
+    let updated = repositories::exams::fetch_one_by_id(state.db(), &exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch updated exam"))?;
 
     let task_types = fetch_task_types(state.db(), &updated.id).await?;
 
@@ -495,26 +384,7 @@ async fn publish_exam(
         "Exam published"
     );
 
-    Ok(Json(ExamResponse {
-        id: updated.id,
-        title: updated.title,
-        description: updated.description,
-        start_time: format_primitive(updated.start_time),
-        end_time: format_primitive(updated.end_time),
-        duration_minutes: updated.duration_minutes,
-        timezone: updated.timezone,
-        max_attempts: updated.max_attempts,
-        allow_breaks: updated.allow_breaks,
-        break_duration_minutes: updated.break_duration_minutes,
-        auto_save_interval: updated.auto_save_interval,
-        settings: updated.settings.0,
-        status: updated.status,
-        created_by: updated.created_by,
-        created_at: format_primitive(updated.created_at),
-        updated_at: format_primitive(updated.updated_at),
-        published_at: updated.published_at.map(format_primitive),
-        task_types,
-    }))
+    Ok(Json(exam_to_response(updated, task_types)))
 }
 
 async fn add_task_type(
@@ -523,20 +393,22 @@ async fn add_task_type(
     state: axum::extract::State<AppState>,
     Json(payload): Json<TaskTypeCreate>,
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), ApiError> {
+    payload
+        .validate()
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     let mut tx = state
         .db()
         .begin()
         .await
-        .map_err(|_| ApiError::Internal("Failed to start transaction".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to start transaction"))?;
 
-    let exam_exists = sqlx::query_scalar::<_, String>("SELECT id FROM exams WHERE id = $1")
-        .bind(&exam_id)
-        .fetch_optional(&mut *tx)
+    let exam_exists = repositories::exams::exists_by_id(&mut *tx, &exam_id)
         .await
-        .map_err(|_| ApiError::Internal("Failed to fetch exam".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
 
     if exam_exists.is_none() {
-        return Err(ApiError::BadRequest("Exam not found".to_string()));
+        return Err(ApiError::NotFound("Exam not found".to_string()));
     }
 
     let now = now_primitive();
@@ -565,12 +437,12 @@ async fn add_task_type(
     .bind(now)
     .execute(&mut *tx)
     .await
-    .map_err(|_| ApiError::Internal("Failed to create task type".to_string()))?;
+    .map_err(|e| ApiError::internal(e, "Failed to create task type"))?;
 
     insert_variants(&mut tx, &task_type_id, payload.variants).await?;
     tx.commit()
         .await
-        .map_err(|_| ApiError::Internal("Failed to commit transaction".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
 
     Ok((
         axum::http::StatusCode::CREATED,
@@ -603,7 +475,7 @@ async fn list_exam_submissions(
     let skip = params.skip.max(0);
     let limit = params.limit.clamp(1, 1000);
     query.push_str(" ORDER BY s.submitted_at DESC");
-    query.push_str(&format!(" OFFSET {} LIMIT {}", skip, limit));
+    query.push_str(&format!(" OFFSET {skip} LIMIT {limit}"));
 
     let mut sql = sqlx::query(&query).bind(&exam_id);
     if let Some(status) = params.status {
@@ -613,28 +485,28 @@ async fn list_exam_submissions(
     let rows = sql
         .fetch_all(state.db())
         .await
-        .map_err(|_| ApiError::Internal("Failed to list submissions".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to list submissions"))?;
 
     let mut response = Vec::new();
     for row in rows {
         let submission_id: String =
-            row.try_get("id").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("id").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let student_id: String =
-            row.try_get("student_id").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("student_id").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let student_isu: String =
-            row.try_get("isu").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("isu").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let student_name: String =
-            row.try_get("full_name").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("full_name").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let submitted_at: PrimitiveDateTime =
-            row.try_get("submitted_at").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("submitted_at").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let status: SubmissionStatus =
-            row.try_get("status").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("status").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let ai_score: Option<f64> =
-            row.try_get("ai_score").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("ai_score").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let final_score: Option<f64> =
-            row.try_get("final_score").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("final_score").map_err(|e| ApiError::internal(e, "Bad row"))?;
         let max_score: f64 =
-            row.try_get("max_score").map_err(|_| ApiError::Internal("Bad row".to_string()))?;
+            row.try_get("max_score").map_err(|e| ApiError::internal(e, "Bad row"))?;
 
         response.push(serde_json::json!({
             "id": submission_id,
@@ -685,7 +557,7 @@ async fn insert_task_types(
         .bind(now)
         .execute(&mut **tx)
         .await
-        .map_err(|_| ApiError::Internal("Failed to create task type".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to create task type"))?;
 
         let variants = insert_variants(tx, &task_type_id, task_type.variants).await?;
 
@@ -738,7 +610,7 @@ async fn insert_variants(
         .bind(now)
         .execute(&mut **tx)
         .await
-        .map_err(|_| ApiError::Internal("Failed to create task variant".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to create task variant"))?;
 
         responses.push(TaskVariantResponse {
             id: variant_id,
@@ -760,28 +632,15 @@ async fn fetch_task_types(
     pool: &sqlx::PgPool,
     exam_id: &str,
 ) -> Result<Vec<TaskTypeResponse>, ApiError> {
-    let task_types = sqlx::query_as::<_, TaskType>(
-        "SELECT id, exam_id, title, description, order_index, max_score, rubric,
-                difficulty, taxonomy_tags, formulas, units, validation_rules,
-                created_at, updated_at
-         FROM task_types WHERE exam_id = $1 ORDER BY order_index",
-    )
-    .bind(exam_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|_| ApiError::Internal("Failed to fetch task types".to_string()))?;
+    let task_types = repositories::task_types::list_by_exam(pool, exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch task types"))?;
 
     let mut responses = Vec::new();
     for task_type in task_types {
-        let variants = sqlx::query_as::<_, TaskVariant>(
-            "SELECT id, task_type_id, content, parameters, reference_solution,
-                    reference_answer, answer_tolerance, attachments, created_at
-             FROM task_variants WHERE task_type_id = $1",
-        )
-        .bind(&task_type.id)
-        .fetch_all(pool)
-        .await
-        .map_err(|_| ApiError::Internal("Failed to fetch variants".to_string()))?;
+        let variants = repositories::task_types::list_variants(pool, &task_type.id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch variants"))?;
 
         let variant_responses = variants
             .into_iter()
@@ -820,6 +679,29 @@ async fn fetch_task_types(
     Ok(responses)
 }
 
+fn exam_to_response(exam: Exam, task_types: Vec<TaskTypeResponse>) -> ExamResponse {
+    ExamResponse {
+        id: exam.id,
+        title: exam.title,
+        description: exam.description,
+        start_time: format_primitive(exam.start_time),
+        end_time: format_primitive(exam.end_time),
+        duration_minutes: exam.duration_minutes,
+        timezone: exam.timezone,
+        max_attempts: exam.max_attempts,
+        allow_breaks: exam.allow_breaks,
+        break_duration_minutes: exam.break_duration_minutes,
+        auto_save_interval: exam.auto_save_interval,
+        settings: exam.settings.0,
+        status: exam.status,
+        created_by: exam.created_by,
+        created_at: format_primitive(exam.created_at),
+        updated_at: format_primitive(exam.updated_at),
+        published_at: exam.published_at.map(format_primitive),
+        task_types,
+    }
+}
+
 fn to_primitive_utc(value: OffsetDateTime) -> PrimitiveDateTime {
     let utc = value.to_offset(UtcOffset::UTC);
     PrimitiveDateTime::new(utc.date(), utc.time())
@@ -838,7 +720,7 @@ fn default_limit() -> i64 {
 mod tests {
     use axum::http::{Method, StatusCode};
     use serde_json::json;
-    use time::{Duration, OffsetDateTime};
+    use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
     use tower::ServiceExt;
 
     use crate::db::types::UserRole;
@@ -846,8 +728,8 @@ mod tests {
 
     fn exam_payload() -> serde_json::Value {
         let now = OffsetDateTime::now_utc().replace_nanosecond(0).expect("nanoseconds");
-        let start_time = now - Duration::hours(1);
-        let end_time = now + Duration::hours(2);
+        let start_time = (now - Duration::hours(1)).format(&Rfc3339).unwrap();
+        let end_time = (now + Duration::hours(2)).format(&Rfc3339).unwrap();
 
         json!({
             "title": "Chemistry midterm",

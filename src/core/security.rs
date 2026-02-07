@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use argon2::{password_hash::SaltString, Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Validation};
 use rand::rngs::OsRng;

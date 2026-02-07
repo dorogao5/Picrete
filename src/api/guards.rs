@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use async_trait::async_trait;
 use axum::extract::{FromRequestParts, State};
 use axum::http::{header, request::Parts};
@@ -8,6 +6,7 @@ use crate::api::errors::ApiError;
 use crate::core::{security, state::AppState};
 use crate::db::models::User;
 use crate::db::types::UserRole;
+use crate::repositories;
 
 pub(crate) struct CurrentUser(pub(crate) User);
 pub(crate) struct CurrentTeacher(pub(crate) User);
@@ -23,7 +22,7 @@ impl FromRequestParts<AppState> for CurrentUser {
     ) -> Result<Self, Self::Rejection> {
         let State(app_state) = State::<AppState>::from_request_parts(parts, state)
             .await
-            .map_err(|_| ApiError::Internal("Failed to access application state".to_string()))?;
+            .map_err(|e| ApiError::internal(e, "Failed to access application state"))?;
 
         let auth_header = parts
             .headers
@@ -38,16 +37,9 @@ impl FromRequestParts<AppState> for CurrentUser {
         let claims = security::verify_token(token, app_state.settings())
             .map_err(|_| ApiError::Unauthorized("Invalid authentication credentials"))?;
 
-        let user = sqlx::query_as::<_, User>(
-            "SELECT id, isu, hashed_password, full_name, role, is_active, is_verified,
-                    pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at,
-                    terms_version, privacy_version, created_at, updated_at
-             FROM users WHERE id = $1",
-        )
-        .bind(&claims.sub)
-        .fetch_optional(app_state.db())
-        .await
-        .map_err(|_| ApiError::Internal("Failed to load user".to_string()))?;
+        let user = repositories::users::find_by_id(app_state.db(), &claims.sub)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to load user"))?;
 
         let Some(user) = user else {
             return Err(ApiError::Unauthorized("User not found"));

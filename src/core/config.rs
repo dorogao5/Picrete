@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{env, fs, path::PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -42,6 +40,7 @@ pub(crate) struct ServerSettings {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct ApiSettings {
     pub(crate) project_name: String,
     pub(crate) version: String,
@@ -92,6 +91,7 @@ pub(crate) struct AiSettings {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct StorageSettings {
     pub(crate) upload_dir: String,
     pub(crate) max_upload_size_mb: u64,
@@ -109,6 +109,7 @@ pub(crate) struct S3Settings {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct ExamSettings {
     pub(crate) max_concurrent_exams: u64,
     pub(crate) auto_save_interval_seconds: u64,

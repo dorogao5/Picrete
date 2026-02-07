@@ -31,6 +31,7 @@ aws-credential-types = "1"
 aws-sdk-s3 = "1"
 hex = "0.4"
 sha2 = "0.10"
+validator = { version = "0.20.0", features = ["derive"] }
 
 [dev-dependencies]
 tower = "0.5"

@@ -1,11 +1,33 @@
 use sqlx::Row;
 
+fn database_url() -> Option<String> {
+    // Load .env so POSTGRES_* from .env are available (integration tests don't use app config)
+    dotenvy::dotenv().ok();
+
+    if let Ok(url) = std::env::var("DATABASE_URL") {
+        if !url.trim().is_empty() {
+            return Some(url);
+        }
+    }
+
+    // Build from POSTGRES_* (same as app config)
+    let server = std::env::var("POSTGRES_SERVER").unwrap_or_else(|_| "localhost".into());
+    let port = std::env::var("POSTGRES_PORT").unwrap_or_else(|_| "5432".into());
+    let user = std::env::var("POSTGRES_USER").unwrap_or_else(|_| "picretesuperuser".into());
+    let password = std::env::var("POSTGRES_PASSWORD").unwrap_or_default();
+    let db = std::env::var("POSTGRES_DB").unwrap_or_else(|_| "picrete_db".into());
+
+    Some(format!(
+        "postgresql://{user}:{password}@{server}:{port}/{db}"
+    ))
+}
+
 #[tokio::test]
 async fn migrations_apply_and_tables_exist() -> anyhow::Result<()> {
-    let database_url = match std::env::var("DATABASE_URL") {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => {
-            eprintln!("DATABASE_URL not set; skipping migrations smoke test");
+    let database_url = match database_url() {
+        Some(url) => url,
+        None => {
+            eprintln!("DATABASE_URL and POSTGRES_* not set; skipping migrations smoke test");
             return Ok(());
         }
     };
@@ -27,7 +49,7 @@ async fn migrations_apply_and_tables_exist() -> anyhow::Result<()> {
     ];
 
     for table in tables {
-        let row = sqlx::query("SELECT to_regclass($1)").bind(table).fetch_one(&pool).await?;
+        let row = sqlx::query("SELECT to_regclass($1)::text").bind(table).fetch_one(&pool).await?;
         let regclass: Option<String> = row.try_get(0)?;
         assert!(regclass.is_some(), "expected table {table} to exist after migrations");
     }

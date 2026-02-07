@@ -9,6 +9,7 @@ use crate::core::security;
 use crate::core::state::AppState;
 use crate::db::models::User;
 use crate::db::types::UserRole;
+use crate::repositories;
 use crate::schemas::user::{AdminUserCreate, AdminUserUpdate, UserResponse};
 use sqlx::{Postgres, QueryBuilder};
 
@@ -104,7 +105,7 @@ async fn list_users(
         .build_query_as::<User>()
         .fetch_all(state.db())
         .await
-        .map_err(|_| ApiError::Internal("Failed to list users".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to list users"))?;
 
     Ok(Json(users.into_iter().map(UserResponse::from_db).collect()))
 }
@@ -114,19 +115,12 @@ async fn get_user(
     CurrentAdmin(_admin): CurrentAdmin,
     state: axum::extract::State<AppState>,
 ) -> Result<Json<UserResponse>, ApiError> {
-    let user = sqlx::query_as::<_, User>(
-        "SELECT id, isu, hashed_password, full_name, role, is_active, is_verified,
-                pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at,
-                terms_version, privacy_version, created_at, updated_at
-         FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(state.db())
-    .await
-    .map_err(|_| ApiError::Internal("Failed to fetch user".to_string()))?;
+    let user = repositories::users::find_by_id(state.db(), &user_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch user"))?;
 
     let Some(user) = user else {
-        return Err(ApiError::BadRequest("User not found".to_string()));
+        return Err(ApiError::NotFound("User not found".to_string()));
     };
 
     Ok(Json(UserResponse::from_db(user)))
@@ -139,44 +133,42 @@ async fn create_user(
 ) -> Result<(axum::http::StatusCode, Json<UserResponse>), ApiError> {
     validate_isu(&payload.isu)?;
 
-    let existing = sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE isu = $1")
-        .bind(&payload.isu)
-        .fetch_optional(state.db())
+    let existing = repositories::users::exists_by_isu(state.db(), &payload.isu)
         .await
-        .map_err(|_| ApiError::Internal("Failed to check existing user".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to check existing user"))?;
 
     if existing.is_some() {
-        return Err(ApiError::BadRequest("User with this ISU already exists".to_string()));
+        return Err(ApiError::Conflict("User with this ISU already exists".to_string()));
     }
 
     let hashed_password = security::hash_password(&payload.password)
-        .map_err(|_| ApiError::Internal("Failed to hash password".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to hash password"))?;
 
     let now_offset = OffsetDateTime::now_utc();
     let now_primitive = primitive_now_utc(now_offset);
 
-    let user = sqlx::query_as::<_, User>(
-        "INSERT INTO users (
-            id, isu, hashed_password, full_name, role, is_active, is_verified,
-            pd_consent, created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-        RETURNING id, isu, hashed_password, full_name, role, is_active, is_verified,
-            pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at,
-            terms_version, privacy_version, created_at, updated_at",
+    let user = repositories::users::create(
+        state.db(),
+        repositories::users::CreateUser {
+            id: &Uuid::new_v4().to_string(),
+            isu: &payload.isu,
+            hashed_password,
+            full_name: &payload.full_name,
+            role: payload.role,
+            is_active: payload.is_active,
+            is_verified: payload.is_verified,
+            pd_consent: false,
+            pd_consent_at: None,
+            pd_consent_version: None,
+            terms_accepted_at: None,
+            terms_version: None,
+            privacy_version: None,
+            created_at: now_primitive,
+            updated_at: now_primitive,
+        },
     )
-    .bind(Uuid::new_v4().to_string())
-    .bind(&payload.isu)
-    .bind(hashed_password)
-    .bind(&payload.full_name)
-    .bind(payload.role)
-    .bind(payload.is_active)
-    .bind(payload.is_verified)
-    .bind(false)
-    .bind(now_primitive)
-    .bind(now_primitive)
-    .fetch_one(state.db())
     .await
-    .map_err(|_| ApiError::Internal("Failed to create user".to_string()))?;
+    .map_err(|e| ApiError::internal(e, "Failed to create user"))?;
 
     tracing::info!(
         admin_id = %admin.id,
@@ -194,25 +186,18 @@ async fn update_user(
     state: axum::extract::State<AppState>,
     Json(payload): Json<AdminUserUpdate>,
 ) -> Result<Json<UserResponse>, ApiError> {
-    let user = sqlx::query_as::<_, User>(
-        "SELECT id, isu, hashed_password, full_name, role, is_active, is_verified,
-                pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at,
-                terms_version, privacy_version, created_at, updated_at
-         FROM users WHERE id = $1",
-    )
-    .bind(&user_id)
-    .fetch_optional(state.db())
-    .await
-    .map_err(|_| ApiError::Internal("Failed to fetch user".to_string()))?;
+    let user = repositories::users::find_by_id(state.db(), &user_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch user"))?;
 
     let Some(_user) = user else {
-        return Err(ApiError::BadRequest("User not found".to_string()));
+        return Err(ApiError::NotFound("User not found".to_string()));
     };
 
     let hashed_password = if let Some(password) = payload.password.as_ref() {
         Some(
             security::hash_password(password)
-                .map_err(|_| ApiError::Internal("Failed to hash password".to_string()))?,
+                .map_err(|e| ApiError::internal(e, "Failed to hash password"))?,
         )
     } else {
         None
@@ -221,37 +206,24 @@ async fn update_user(
     let now_offset = OffsetDateTime::now_utc();
     let now_primitive = primitive_now_utc(now_offset);
 
-    sqlx::query(
-        "UPDATE users SET
-            full_name = COALESCE($1, full_name),
-            role = COALESCE($2, role),
-            is_active = COALESCE($3, is_active),
-            is_verified = COALESCE($4, is_verified),
-            hashed_password = COALESCE($5, hashed_password),
-            updated_at = $6
-         WHERE id = $7",
+    repositories::users::update(
+        state.db(),
+        &user_id,
+        repositories::users::UpdateUser {
+            full_name: payload.full_name,
+            role: payload.role,
+            is_active: payload.is_active,
+            is_verified: payload.is_verified,
+            hashed_password,
+            updated_at: now_primitive,
+        },
     )
-    .bind(payload.full_name)
-    .bind(payload.role)
-    .bind(payload.is_active)
-    .bind(payload.is_verified)
-    .bind(hashed_password)
-    .bind(now_primitive)
-    .bind(&user_id)
-    .execute(state.db())
     .await
-    .map_err(|_| ApiError::Internal("Failed to update user".to_string()))?;
+    .map_err(|e| ApiError::internal(e, "Failed to update user"))?;
 
-    let updated = sqlx::query_as::<_, User>(
-        "SELECT id, isu, hashed_password, full_name, role, is_active, is_verified,
-                pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at,
-                terms_version, privacy_version, created_at, updated_at
-         FROM users WHERE id = $1",
-    )
-    .bind(&user_id)
-    .fetch_one(state.db())
-    .await
-    .map_err(|_| ApiError::Internal("Failed to fetch updated user".to_string()))?;
+    let updated = repositories::users::fetch_one_by_id(state.db(), &user_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch updated user"))?;
 
     tracing::info!(
         admin_id = %admin.id,

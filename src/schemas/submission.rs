@@ -1,7 +1,6 @@
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Rfc3339, PrimitiveDateTime};
+use validator::Validate;
 
 use crate::db::types::{SessionStatus, SubmissionStatus};
 
@@ -73,11 +72,13 @@ pub(crate) struct SubmissionApproveRequest {
     pub(crate) teacher_comments: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub(crate) struct SubmissionOverrideRequest {
+    #[validate(range(min = 0.0, message = "final_score must be non-negative"))]
     pub(crate) final_score: f64,
     pub(crate) teacher_comments: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub(crate) scores: Option<Vec<serde_json::Value>>,
 }
 

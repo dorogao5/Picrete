@@ -14,6 +14,7 @@ use crate::core::security;
 use crate::core::state::AppState;
 use crate::db::models::User;
 use crate::db::types::UserRole;
+use crate::repositories;
 use crate::schemas::auth::TokenResponse;
 use crate::schemas::user::{UserCreate, UserLogin, UserResponse};
 
@@ -54,18 +55,16 @@ async fn signup(
         return Err(ApiError::BadRequest("Personal data consent is required".to_string()));
     }
 
-    let existing = sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE isu = $1")
-        .bind(&payload.isu)
-        .fetch_optional(state.db())
+    let existing = repositories::users::exists_by_isu(state.db(), &payload.isu)
         .await
-        .map_err(|_| ApiError::Internal("Failed to check existing user".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to check existing user"))?;
 
     if existing.is_some() {
-        return Err(ApiError::BadRequest("User with this ISU already exists".to_string()));
+        return Err(ApiError::Conflict("User with this ISU already exists".to_string()));
     }
 
     let hashed_password = security::hash_password(&payload.password)
-        .map_err(|_| ApiError::Internal("Failed to hash password".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to hash password"))?;
 
     let now_offset = OffsetDateTime::now_utc();
     let now_primitive = primitive_now_utc(now_offset);
@@ -83,39 +82,31 @@ async fn signup(
         .clone()
         .unwrap_or_else(|| state.settings().api().privacy_version.clone());
 
-    let user = sqlx::query_as::<_, User>(
-        "INSERT INTO users (
-            id, isu, hashed_password, full_name, role, is_active, is_verified,
-            pd_consent, pd_consent_at, pd_consent_version,
-            terms_accepted_at, terms_version, privacy_version,
-            created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-        RETURNING id, isu, hashed_password, full_name, role, is_active, is_verified,
-            pd_consent, pd_consent_at, pd_consent_version,
-            terms_accepted_at, terms_version, privacy_version,
-            created_at, updated_at",
+    let user = repositories::users::create(
+        state.db(),
+        repositories::users::CreateUser {
+            id: &Uuid::new_v4().to_string(),
+            isu: &payload.isu,
+            hashed_password,
+            full_name: &payload.full_name,
+            role: UserRole::Student,
+            is_active: true,
+            is_verified: false,
+            pd_consent: true,
+            pd_consent_at: Some(now_offset),
+            pd_consent_version: Some(pd_consent_version),
+            terms_accepted_at: Some(now_offset),
+            terms_version: Some(terms_version),
+            privacy_version: Some(privacy_version),
+            created_at: now_primitive,
+            updated_at: now_primitive,
+        },
     )
-    .bind(Uuid::new_v4().to_string())
-    .bind(&payload.isu)
-    .bind(hashed_password)
-    .bind(&payload.full_name)
-    .bind(UserRole::Student)
-    .bind(true)
-    .bind(false)
-    .bind(true)
-    .bind(Some(now_offset))
-    .bind(pd_consent_version)
-    .bind(Some(now_offset))
-    .bind(terms_version)
-    .bind(privacy_version)
-    .bind(now_primitive)
-    .bind(now_primitive)
-    .fetch_one(state.db())
     .await
-    .map_err(|_| ApiError::Internal("Failed to create user".to_string()))?;
+    .map_err(|e| ApiError::internal(e, "Failed to create user"))?;
 
     let token = security::create_access_token(&user.id, state.settings(), None)
-        .map_err(|_| ApiError::Internal("Failed to create access token".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to create access token"))?;
 
     let response = TokenResponse {
         access_token: token,
@@ -154,7 +145,7 @@ async fn login(
     }
 
     let token = security::create_access_token(&user.id, state.settings(), None)
-        .map_err(|_| ApiError::Internal("Failed to create access token".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to create access token"))?;
 
     Ok(Json(TokenResponse {
         access_token: token,
@@ -191,7 +182,7 @@ async fn token(
     }
 
     let token = security::create_access_token(&user.id, state.settings(), None)
-        .map_err(|_| ApiError::Internal("Failed to create access token".to_string()))?;
+        .map_err(|e| ApiError::internal(e, "Failed to create access token"))?;
 
     Ok(Json(TokenResponse {
         access_token: token,
@@ -205,17 +196,10 @@ async fn me(CurrentUser(user): CurrentUser) -> Json<UserResponse> {
 }
 
 async fn fetch_user_by_isu(state: &AppState, isu: &str) -> Result<User, ApiError> {
-    sqlx::query_as::<_, User>(
-        "SELECT id, isu, hashed_password, full_name, role, is_active, is_verified,
-                pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at,
-                terms_version, privacy_version, created_at, updated_at
-         FROM users WHERE isu = $1",
-    )
-    .bind(isu)
-    .fetch_optional(state.db())
-    .await
-    .map_err(|_| ApiError::Internal("Failed to load user".to_string()))?
-    .ok_or(ApiError::Unauthorized("Incorrect ISU or password"))
+    repositories::users::find_by_isu(state.db(), isu)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to load user"))?
+        .ok_or(ApiError::Unauthorized("Incorrect ISU or password"))
 }
 
 fn validate_isu(isu: &str) -> Result<(), ApiError> {
