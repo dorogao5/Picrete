@@ -27,7 +27,9 @@ pub(super) async fn get_submission(
     let Some(details) = details else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
-    if !matches!(teacher.role, UserRole::Admin) && details.exam_created_by != teacher.id {
+    if !matches!(teacher.role, UserRole::Admin)
+        && details.exam_created_by.as_deref() != Some(teacher.id.as_str())
+    {
         return Err(ApiError::Forbidden("You can only manage submissions for your own exams"));
     }
 
@@ -164,13 +166,11 @@ pub(super) async fn get_image_view_url(
         return Err(ApiError::Forbidden("Access denied"));
     }
     if matches!(user.role, UserRole::Teacher) {
-        let exam_creator = repositories::submissions::find_exam_creator_by_submission(
-            state.db(),
-            &submission.id,
-        )
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch submission owner"))?
-        .ok_or_else(|| ApiError::NotFound("Submission not found".to_string()))?;
+        let exam_creator =
+            repositories::submissions::find_exam_creator_by_submission(state.db(), &submission.id)
+                .await
+                .map_err(|e| ApiError::internal(e, "Failed to fetch submission owner"))?
+                .ok_or_else(|| ApiError::NotFound("Submission not found".to_string()))?;
 
         if exam_creator != user.id {
             return Err(ApiError::Forbidden("Access denied"));

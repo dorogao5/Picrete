@@ -31,7 +31,7 @@ pub(crate) struct TeacherSubmissionDetails {
     pub(crate) reviewed_at: Option<PrimitiveDateTime>,
     pub(crate) exam_id: String,
     pub(crate) exam_title: String,
-    pub(crate) exam_created_by: String,
+    pub(crate) exam_created_by: Option<String>,
     pub(crate) variant_assignments: Json<HashMap<String, String>>,
     pub(crate) student_name: String,
     pub(crate) student_isu: String,
@@ -48,7 +48,7 @@ pub(crate) async fn find_exam_creator_by_submission(
     pool: &PgPool,
     submission_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar::<_, String>(
+    let row = sqlx::query_as::<_, (Option<String>,)>(
         "SELECT e.created_by
          FROM submissions s
          JOIN exam_sessions es ON es.id = s.session_id
@@ -57,7 +57,9 @@ pub(crate) async fn find_exam_creator_by_submission(
     )
     .bind(submission_id)
     .fetch_optional(pool)
-    .await
+    .await?;
+
+    Ok(row.and_then(|(creator,)| creator))
 }
 
 pub(crate) async fn find_by_session(

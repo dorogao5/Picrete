@@ -89,7 +89,7 @@ CREATE TABLE exams (
     break_duration_minutes  INTEGER     NOT NULL DEFAULT 0,
     auto_save_interval      INTEGER     NOT NULL DEFAULT 30,
     status                  examstatus  NOT NULL DEFAULT 'draft',
-    created_by              TEXT        NOT NULL,
+    created_by              TEXT,
     created_at              TIMESTAMP   NOT NULL DEFAULT now(),
     updated_at              TIMESTAMP   NOT NULL DEFAULT now(),
     published_at            TIMESTAMP,
@@ -97,7 +97,7 @@ CREATE TABLE exams (
 
     CONSTRAINT pk_exams PRIMARY KEY (id),
     CONSTRAINT fk_exams_created_by
-        FOREIGN KEY (created_by) REFERENCES users (id)
+        FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL
 );
 
 -- 2.3 task_types ----------------------------------------------
@@ -165,7 +165,7 @@ CREATE TABLE exam_sessions (
     CONSTRAINT fk_exam_sessions_exam
         FOREIGN KEY (exam_id) REFERENCES exams (id) ON DELETE CASCADE,
     CONSTRAINT fk_exam_sessions_student
-        FOREIGN KEY (student_id) REFERENCES users (id)
+        FOREIGN KEY (student_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
 -- 2.6 submissions ---------------------------------------------
@@ -202,9 +202,9 @@ CREATE TABLE submissions (
     CONSTRAINT fk_submissions_session
         FOREIGN KEY (session_id) REFERENCES exam_sessions (id) ON DELETE CASCADE,
     CONSTRAINT fk_submissions_student
-        FOREIGN KEY (student_id) REFERENCES users (id),
+        FOREIGN KEY (student_id) REFERENCES users (id) ON DELETE CASCADE,
     CONSTRAINT fk_submissions_reviewed_by
-        FOREIGN KEY (reviewed_by) REFERENCES users (id)
+        FOREIGN KEY (reviewed_by) REFERENCES users (id) ON DELETE SET NULL
 );
 
 -- 2.7 submission_images ---------------------------------------

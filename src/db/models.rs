@@ -41,7 +41,7 @@ pub(crate) struct Exam {
     pub(crate) break_duration_minutes: i32,
     pub(crate) auto_save_interval: i32,
     pub(crate) status: ExamStatus,
-    pub(crate) created_by: String,
+    pub(crate) created_by: Option<String>,
     pub(crate) created_at: PrimitiveDateTime,
     pub(crate) updated_at: PrimitiveDateTime,
     pub(crate) published_at: Option<PrimitiveDateTime>,

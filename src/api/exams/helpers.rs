@@ -190,5 +190,5 @@ pub(super) fn exam_to_response(exam: Exam, task_types: Vec<TaskTypeResponse>) ->
 }
 
 pub(super) fn can_manage_exam(user: &User, exam: &Exam) -> bool {
-    matches!(user.role, UserRole::Admin) || exam.created_by == user.id
+    matches!(user.role, UserRole::Admin) || exam.created_by.as_deref() == Some(user.id.as_str())
 }

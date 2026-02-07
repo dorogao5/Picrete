@@ -171,7 +171,7 @@ pub(crate) struct ExamResponse {
     pub(crate) auto_save_interval: i32,
     pub(crate) settings: serde_json::Value,
     pub(crate) status: ExamStatus,
-    pub(crate) created_by: String,
+    pub(crate) created_by: Option<String>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
     pub(crate) published_at: Option<String>,
