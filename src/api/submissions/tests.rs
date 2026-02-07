@@ -6,7 +6,59 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use crate::db::types::{SubmissionStatus, UserRole};
+use crate::repositories;
 use crate::test_support;
+
+/// Inserts a submission and one image for the session so submit passes the "at least one image" check.
+/// Returns (submission_id, image_id).
+async fn insert_submission_with_one_image(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    student_id: &str,
+    exam_id: &str,
+) -> (String, String) {
+    let max_score = repositories::exams::max_score_for_exam(pool, exam_id)
+        .await
+        .expect("max_score");
+    let now = PrimitiveDateTime::new(OffsetDateTime::now_utc().date(), OffsetDateTime::now_utc().time());
+    let submission_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO submissions (id, session_id, student_id, submitted_at, status, max_score, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    )
+    .bind(&submission_id)
+    .bind(session_id)
+    .bind(student_id)
+    .bind(now)
+    .bind(SubmissionStatus::Uploaded)
+    .bind(max_score)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("insert submission");
+
+    let image_id = Uuid::new_v4().to_string();
+    let file_path = format!("submissions/{session_id}/{image_id}_image.png");
+    sqlx::query(
+        "INSERT INTO submission_images (id, submission_id, filename, file_path, file_size, mime_type, order_index, is_processed, uploaded_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+    )
+    .bind(&image_id)
+    .bind(&submission_id)
+    .bind("image.png")
+    .bind(&file_path)
+    .bind(1024_i64)
+    .bind("image/png")
+    .bind(0_i32)
+    .bind(false)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("insert image");
+
+    (submission_id, image_id)
+}
 
 #[test]
 fn sanitized_filename_filters_disallowed_chars() {
@@ -275,6 +327,8 @@ async fn student_can_submit_exam() {
     assert_eq!(status, StatusCode::OK, "response: {session}");
     let session_id = session["id"].as_str().expect("session id");
 
+    insert_submission_with_one_image(ctx.state.db(), session_id, &student.id, &exam_id).await;
+
     let response = ctx
         .app
         .oneshot(test_support::json_request(
@@ -333,6 +387,8 @@ async fn submit_exam_does_not_downgrade_processing_submission() {
     let session = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::OK, "response: {session}");
     let session_id = session["id"].as_str().expect("session id").to_string();
+
+    insert_submission_with_one_image(ctx.state.db(), &session_id, &student.id, &exam_id).await;
 
     let response = ctx
         .app
@@ -413,6 +469,8 @@ async fn override_score_rejects_values_above_max_score() {
     assert_eq!(status, StatusCode::OK, "response: {session}");
     let session_id = session["id"].as_str().expect("session id");
 
+    insert_submission_with_one_image(ctx.state.db(), session_id, &student.id, &exam_id).await;
+
     let response = ctx
         .app
         .clone()
@@ -463,7 +521,7 @@ async fn view_url_returns_presigned_url() {
     .await;
     let teacher_token = test_support::bearer_token(&teacher.id, ctx.state.settings());
 
-    let (student_token, student_id) =
+    let (student_token, _student_id) =
         signup_student(ctx.app.clone(), "000031", "Student User", "student-pass").await;
 
     let exam_id = create_published_exam(ctx.app.clone(), &teacher_token).await;
@@ -484,6 +542,10 @@ async fn view_url_returns_presigned_url() {
     let session = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::OK, "response: {session}");
     let session_id = session["id"].as_str().expect("session id");
+    let student_id = session["student_id"].as_str().expect("student_id in session");
+
+    let (_submission_id, image_id) =
+        insert_submission_with_one_image(ctx.state.db(), session_id, student_id, &exam_id).await;
 
     let response = ctx
         .app
@@ -501,30 +563,6 @@ async fn view_url_returns_presigned_url() {
     let submission = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::OK, "response: {submission}");
     let submission_id = submission["id"].as_str().expect("submission id");
-
-    let image_id = Uuid::new_v4().to_string();
-    let file_path = format!("submissions/{session_id}/image.png");
-    let now_offset = OffsetDateTime::now_utc();
-    let now = PrimitiveDateTime::new(now_offset.date(), now_offset.time());
-
-    sqlx::query(
-        "INSERT INTO submission_images (
-            id, submission_id, filename, file_path, file_size, mime_type,
-            order_index, is_processed, uploaded_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-    )
-    .bind(&image_id)
-    .bind(submission_id)
-    .bind("image.png")
-    .bind(&file_path)
-    .bind(1024_i64)
-    .bind("image/png")
-    .bind(0_i32)
-    .bind(false)
-    .bind(now)
-    .execute(ctx.state.db())
-    .await
-    .expect("insert image");
 
     let response = ctx
         .app
@@ -550,7 +588,7 @@ async fn view_url_returns_presigned_url() {
             .fetch_optional(ctx.state.db())
             .await
             .expect("owner");
-    assert_eq!(owner.as_deref(), Some(student_id.as_str()));
+    assert_eq!(owner.as_deref(), Some(student_id));
 }
 
 #[tokio::test]
@@ -607,6 +645,9 @@ async fn full_flow_signup_login_submit_and_approve() {
     let presign = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::OK, "response: {presign}");
     assert!(presign["upload_url"].as_str().unwrap_or("").contains("work.png"));
+
+    let student_id = session["student_id"].as_str().expect("student_id in session");
+    insert_submission_with_one_image(ctx.state.db(), session_id, student_id, &exam_id).await;
 
     let response = ctx
         .app

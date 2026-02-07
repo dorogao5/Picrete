@@ -207,10 +207,36 @@ pub(in crate::api::submissions) async fn get_session_variant(
         hard_deadline.assume_utc().unix_timestamp() - OffsetDateTime::now_utc().unix_timestamp();
     let remaining = if remaining_seconds < 0 { 0 } else { remaining_seconds };
 
+    // Include already-uploaded images so the client can restore state after refresh
+    let submission_id_opt =
+        repositories::submissions::find_id_by_session(state.db(), &session_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
+    let existing_images: Vec<serde_json::Value> = match submission_id_opt {
+        Some(submission_id) => {
+            let images =
+                crate::api::submissions::helpers::fetch_images(state.db(), &submission_id).await?;
+            images
+                .into_iter()
+                .map(|img| {
+                    serde_json::json!({
+                        "id": img.id,
+                        "filename": img.filename,
+                        "order_index": img.order_index,
+                        "file_size": img.file_size,
+                        "mime_type": img.mime_type,
+                    })
+                })
+                .collect()
+        }
+        None => vec![],
+    };
+
     Ok(Json(serde_json::json!({
         "session": crate::api::submissions::helpers::session_to_response(session),
         "tasks": tasks,
         "time_remaining": remaining,
+        "existing_images": existing_images,
     })))
 }
 

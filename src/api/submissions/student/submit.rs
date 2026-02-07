@@ -50,6 +50,18 @@ pub(in crate::api::submissions) async fn submit_exam(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to create submission"))?;
 
+    let submission = repositories::submissions::find_by_session(state.db(), &session_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to refresh submission"))?
+        .ok_or_else(|| ApiError::Internal("Submission missing".to_string()))?;
+    let images = crate::api::submissions::helpers::fetch_images(state.db(), &submission.id).await?;
+
+    if images.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Добавьте хотя бы одно фото решения перед отправкой".to_string(),
+        ));
+    }
+
     repositories::sessions::submit(state.db(), &session_id, now)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to update session"))?;
@@ -63,11 +75,6 @@ pub(in crate::api::submissions) async fn submit_exam(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to update submission"))?;
 
-    let submission = repositories::submissions::find_by_session(state.db(), &session_id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to refresh submission"))?
-        .ok_or_else(|| ApiError::Internal("Submission missing".to_string()))?;
-    let images = crate::api::submissions::helpers::fetch_images(state.db(), &submission.id).await?;
     let scores = crate::api::submissions::helpers::fetch_scores(state.db(), &submission.id).await?;
 
     Ok(Json(crate::api::submissions::helpers::to_submission_response(submission, images, scores)))
