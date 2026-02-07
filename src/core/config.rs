@@ -85,7 +85,6 @@ pub(crate) struct AiSettings {
     pub(crate) openai_base_url: String,
     pub(crate) ai_model: String,
     pub(crate) ai_max_tokens: u32,
-    pub(crate) ai_temperature: f64,
     pub(crate) ai_request_timeout: u64,
 }
 
@@ -221,7 +220,6 @@ impl Settings {
         let openai_base_url = env_or_default("OPENAI_BASE_URL", "");
         let ai_model = env_or_default("AI_MODEL", "gpt-5");
         let ai_max_tokens = parse_u32("AI_MAX_TOKENS", env_or_default("AI_MAX_TOKENS", "10000"))?;
-        let ai_temperature = parse_f64("AI_TEMPERATURE", env_or_default("AI_TEMPERATURE", "0.3"))?;
         let ai_request_timeout =
             parse_u64("AI_REQUEST_TIMEOUT", env_or_default("AI_REQUEST_TIMEOUT", "600"))?;
 
@@ -297,7 +295,6 @@ impl Settings {
                 openai_base_url,
                 ai_model,
                 ai_max_tokens,
-                ai_temperature,
                 ai_request_timeout,
             },
             storage: StorageSettings {
@@ -493,10 +490,6 @@ fn parse_u32(field: &'static str, value: String) -> Result<u32, ConfigError> {
 
 fn parse_u64(field: &'static str, value: String) -> Result<u64, ConfigError> {
     value.parse::<u64>().map_err(|_| ConfigError::InvalidValue { field, value })
-}
-
-fn parse_f64(field: &'static str, value: String) -> Result<f64, ConfigError> {
-    value.parse::<f64>().map_err(|_| ConfigError::InvalidValue { field, value })
 }
 
 fn parse_cors_origins(value: Option<String>) -> Result<Vec<String>, ConfigError> {

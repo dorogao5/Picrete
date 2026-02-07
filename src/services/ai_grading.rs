@@ -73,7 +73,6 @@ pub(crate) struct AiGradingService {
     base_url: String,
     model: String,
     max_tokens: u32,
-    temperature: f64,
 }
 
 impl AiGradingService {
@@ -91,7 +90,6 @@ impl AiGradingService {
             base_url: settings.ai().openai_base_url.trim_end_matches('/').to_string(),
             model: settings.ai().ai_model.clone(),
             max_tokens: settings.ai().ai_max_tokens,
-            temperature: settings.ai().ai_temperature,
         })
     }
 
@@ -132,7 +130,6 @@ impl AiGradingService {
                 {"role": "user", "content": content}
             ],
             "max_completion_tokens": self.max_tokens,
-            "temperature": self.temperature,
             "response_format": {"type": "json_object"}
         });
 

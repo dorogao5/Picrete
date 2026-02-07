@@ -327,8 +327,6 @@ async fn student_can_submit_exam() {
     assert_eq!(status, StatusCode::OK, "response: {session}");
     let session_id = session["id"].as_str().expect("session id");
 
-    insert_submission_with_one_image(ctx.state.db(), session_id, &student.id, &exam_id).await;
-
     let response = ctx
         .app
         .oneshot(test_support::json_request(
@@ -387,8 +385,6 @@ async fn submit_exam_does_not_downgrade_processing_submission() {
     let session = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::OK, "response: {session}");
     let session_id = session["id"].as_str().expect("session id").to_string();
-
-    insert_submission_with_one_image(ctx.state.db(), &session_id, &student.id, &exam_id).await;
 
     let response = ctx
         .app
@@ -468,8 +464,6 @@ async fn override_score_rejects_values_above_max_score() {
     let session = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::OK, "response: {session}");
     let session_id = session["id"].as_str().expect("session id");
-
-    insert_submission_with_one_image(ctx.state.db(), session_id, &student.id, &exam_id).await;
 
     let response = ctx
         .app
@@ -645,9 +639,6 @@ async fn full_flow_signup_login_submit_and_approve() {
     let presign = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::OK, "response: {presign}");
     assert!(presign["upload_url"].as_str().unwrap_or("").contains("work.png"));
-
-    let student_id = session["student_id"].as_str().expect("student_id in session");
-    insert_submission_with_one_image(ctx.state.db(), session_id, student_id, &exam_id).await;
 
     let response = ctx
         .app
