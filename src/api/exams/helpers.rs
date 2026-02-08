@@ -9,7 +9,6 @@ use crate::schemas::exam::{
     format_primitive, ExamResponse, TaskTypeCreate, TaskTypeResponse, TaskVariantCreate,
     TaskVariantResponse,
 };
-use sqlx::types::Json as SqlxJson;
 
 pub(super) async fn insert_task_types(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -21,28 +20,26 @@ pub(super) async fn insert_task_types(
 
     for task_type in task_types {
         let task_type_id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO task_types (
-                id, exam_id, title, description, order_index, max_score, rubric,
-                difficulty, taxonomy_tags, formulas, units, validation_rules,
-                created_at, updated_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+
+        repositories::task_types::create(
+            &mut **tx,
+            repositories::task_types::CreateTaskType {
+                id: &task_type_id,
+                exam_id,
+                title: &task_type.title,
+                description: &task_type.description,
+                order_index: task_type.order_index,
+                max_score: task_type.max_score,
+                rubric: task_type.rubric.clone(),
+                difficulty: task_type.difficulty,
+                taxonomy_tags: task_type.taxonomy_tags.clone(),
+                formulas: task_type.formulas.clone(),
+                units: task_type.units.clone(),
+                validation_rules: task_type.validation_rules.clone(),
+                created_at: now,
+                updated_at: now,
+            },
         )
-        .bind(&task_type_id)
-        .bind(exam_id)
-        .bind(&task_type.title)
-        .bind(&task_type.description)
-        .bind(task_type.order_index)
-        .bind(task_type.max_score)
-        .bind(SqlxJson(task_type.rubric.clone()))
-        .bind(task_type.difficulty)
-        .bind(SqlxJson(task_type.taxonomy_tags.clone()))
-        .bind(SqlxJson(task_type.formulas.clone()))
-        .bind(SqlxJson(task_type.units.clone()))
-        .bind(SqlxJson(task_type.validation_rules.clone()))
-        .bind(now)
-        .bind(now)
-        .execute(&mut **tx)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to create task type"))?;
 
@@ -80,22 +77,21 @@ pub(super) async fn insert_variants(
 
     for variant in variants {
         let variant_id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO task_variants (
-                id, task_type_id, content, parameters, reference_solution,
-                reference_answer, answer_tolerance, attachments, created_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+
+        repositories::task_types::create_variant(
+            &mut **tx,
+            repositories::task_types::CreateTaskVariant {
+                id: &variant_id,
+                task_type_id,
+                content: &variant.content,
+                parameters: variant.parameters.clone(),
+                reference_solution: variant.reference_solution.clone(),
+                reference_answer: variant.reference_answer.clone(),
+                answer_tolerance: variant.answer_tolerance,
+                attachments: variant.attachments.clone(),
+                created_at: now,
+            },
         )
-        .bind(&variant_id)
-        .bind(task_type_id)
-        .bind(&variant.content)
-        .bind(SqlxJson(variant.parameters.clone()))
-        .bind(variant.reference_solution.clone())
-        .bind(variant.reference_answer.clone())
-        .bind(variant.answer_tolerance)
-        .bind(SqlxJson(variant.attachments.clone()))
-        .bind(now)
-        .execute(&mut **tx)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to create task variant"))?;
 

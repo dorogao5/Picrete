@@ -1,4 +1,5 @@
 pub(crate) mod exams;
+pub(crate) mod health;
 pub(crate) mod images;
 pub(crate) mod scores;
 pub(crate) mod sessions;

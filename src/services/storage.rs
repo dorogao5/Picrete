@@ -106,7 +106,7 @@ mod tests {
 
     #[tokio::test]
     async fn presign_put_and_get_return_urls() {
-        let _guard = test_support::env_lock();
+        let _guard = test_support::env_lock().await;
         test_support::set_test_env();
         test_support::set_test_storage_env();
 

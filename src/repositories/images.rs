@@ -88,3 +88,24 @@ pub(crate) async fn insert(
     .await?;
     Ok(())
 }
+
+pub(crate) async fn mark_ocr_processed(
+    pool: &PgPool,
+    id: &str,
+    ocr_text: &str,
+    processed_at: time::PrimitiveDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE submission_images
+         SET ocr_text = $1,
+             processed_at = $2,
+             is_processed = TRUE
+         WHERE id = $3",
+    )
+    .bind(ocr_text)
+    .bind(processed_at)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}

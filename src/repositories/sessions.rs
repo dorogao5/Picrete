@@ -1,4 +1,5 @@
 use sqlx::{PgPool, Postgres, QueryBuilder};
+use time::PrimitiveDateTime;
 
 use crate::db::models::ExamSession;
 use crate::db::types::{SessionStatus, SubmissionStatus};
@@ -20,6 +21,13 @@ pub(crate) struct CreateSession<'a> {
     pub(crate) attempt_number: i32,
     pub(crate) created_at: time::PrimitiveDateTime,
     pub(crate) updated_at: time::PrimitiveDateTime,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub(crate) struct ActiveSessionDeadlineRow {
+    pub(crate) id: String,
+    pub(crate) expires_at: PrimitiveDateTime,
+    pub(crate) exam_end_time: Option<PrimitiveDateTime>,
 }
 
 pub(crate) async fn find_by_id(
@@ -118,6 +126,30 @@ pub(crate) async fn count_active(executor: impl sqlx::PgExecutor<'_>) -> Result<
         .await
 }
 
+pub(crate) async fn acquire_exam_user_lock(
+    executor: impl sqlx::PgExecutor<'_>,
+    exam_id: &str,
+    student_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(exam_id)
+        .bind(student_id)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn acquire_global_lock(
+    executor: impl sqlx::PgExecutor<'_>,
+    lock_key: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(lock_key)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn create(
     executor: impl sqlx::PgExecutor<'_>,
     session: CreateSession<'_>,
@@ -146,19 +178,6 @@ pub(crate) async fn create(
     Ok(result.rows_affected() > 0)
 }
 
-pub(crate) async fn update_status(
-    pool: &PgPool,
-    id: &str,
-    status: SessionStatus,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE exam_sessions SET status = $1 WHERE id = $2")
-        .bind(status)
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 pub(crate) async fn update_auto_save(
     pool: &PgPool,
     id: &str,
@@ -185,5 +204,41 @@ pub(crate) async fn submit(
         .bind(id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+pub(crate) async fn list_active_with_exam_end(
+    pool: &PgPool,
+) -> Result<Vec<ActiveSessionDeadlineRow>, sqlx::Error> {
+    sqlx::query_as::<_, ActiveSessionDeadlineRow>(
+        "SELECT s.id, s.expires_at, e.end_time AS exam_end_time
+         FROM exam_sessions s
+         LEFT JOIN exams e ON e.id = s.exam_id
+         WHERE s.status = $1",
+    )
+    .bind(SessionStatus::Active)
+    .fetch_all(pool)
+    .await
+}
+
+pub(crate) async fn expire_with_deadline(
+    pool: &PgPool,
+    id: &str,
+    hard_deadline: PrimitiveDateTime,
+    updated_at: PrimitiveDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE exam_sessions
+         SET status = $1,
+             submitted_at = COALESCE(submitted_at, $2),
+             updated_at = $3
+         WHERE id = $4",
+    )
+    .bind(SessionStatus::Expired)
+    .bind(hard_deadline)
+    .bind(updated_at)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
 }

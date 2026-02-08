@@ -1,4 +1,5 @@
 use sqlx::PgPool;
+use sqlx::{Postgres, QueryBuilder};
 
 use crate::db::models::User;
 use crate::db::types::UserRole;
@@ -7,6 +8,14 @@ const COLUMNS: &str = "\
     id, isu, hashed_password, full_name, role, is_active, is_verified, \
     pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at, \
     terms_version, privacy_version, created_at, updated_at";
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct UserListFilters<'a> {
+    pub(crate) isu: Option<&'a str>,
+    pub(crate) role: Option<UserRole>,
+    pub(crate) is_active: Option<bool>,
+    pub(crate) is_verified: Option<bool>,
+}
 
 pub(crate) async fn find_by_id(pool: &PgPool, id: &str) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>(&format!("SELECT {COLUMNS} FROM users WHERE id = $1"))
@@ -27,6 +36,29 @@ pub(crate) async fn exists_by_isu(pool: &PgPool, isu: &str) -> Result<Option<Str
         .bind(isu)
         .fetch_optional(pool)
         .await
+}
+
+pub(crate) async fn list(
+    pool: &PgPool,
+    filters: UserListFilters<'_>,
+    skip: i64,
+    limit: i64,
+) -> Result<Vec<User>, sqlx::Error> {
+    let mut builder = QueryBuilder::<Postgres>::new(format!("SELECT {COLUMNS} FROM users"));
+    apply_filters(&mut builder, filters);
+    builder.push(" ORDER BY created_at DESC");
+    builder.push(" OFFSET ");
+    builder.push_bind(skip.max(0));
+    builder.push(" LIMIT ");
+    builder.push_bind(limit.clamp(1, 1000));
+
+    builder.build_query_as::<User>().fetch_all(pool).await
+}
+
+pub(crate) async fn count(pool: &PgPool, filters: UserListFilters<'_>) -> Result<i64, sqlx::Error> {
+    let mut builder = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM users");
+    apply_filters(&mut builder, filters);
+    builder.build_query_scalar::<i64>().fetch_one(pool).await
 }
 
 pub(crate) struct CreateUser<'a> {
@@ -113,4 +145,41 @@ pub(crate) async fn fetch_one_by_id(pool: &PgPool, id: &str) -> Result<User, sql
         .bind(id)
         .fetch_one(pool)
         .await
+}
+
+fn apply_filters<'a>(builder: &mut QueryBuilder<'a, Postgres>, filters: UserListFilters<'a>) {
+    let mut has_where = false;
+
+    if let Some(isu) = filters.isu {
+        push_filter_separator(builder, &mut has_where);
+        builder.push("isu = ");
+        builder.push_bind(isu);
+    }
+
+    if let Some(role) = filters.role {
+        push_filter_separator(builder, &mut has_where);
+        builder.push("role = ");
+        builder.push_bind(role);
+    }
+
+    if let Some(is_active) = filters.is_active {
+        push_filter_separator(builder, &mut has_where);
+        builder.push("is_active = ");
+        builder.push_bind(is_active);
+    }
+
+    if let Some(is_verified) = filters.is_verified {
+        push_filter_separator(builder, &mut has_where);
+        builder.push("is_verified = ");
+        builder.push_bind(is_verified);
+    }
+}
+
+fn push_filter_separator(builder: &mut QueryBuilder<'_, Postgres>, has_where: &mut bool) {
+    if *has_where {
+        builder.push(" AND ");
+    } else {
+        builder.push(" WHERE ");
+        *has_where = true;
+    }
 }

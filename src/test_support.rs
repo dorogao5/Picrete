@@ -1,4 +1,4 @@
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use axum::{
     body::{to_bytes, Body},
@@ -7,6 +7,7 @@ use axum::{
 };
 use sqlx::PgPool;
 use time::{OffsetDateTime, PrimitiveDateTime};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use uuid::Uuid;
 
 use crate::api;
@@ -23,12 +24,13 @@ const TEST_REDIS_DB: &str = "1";
 pub(crate) struct TestContext {
     pub(crate) state: AppState,
     pub(crate) app: Router,
-    _guard: MutexGuard<'static, ()>,
+    _guard: OwnedMutexGuard<()>,
 }
 
-pub(crate) fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|err| err.into_inner())
+pub(crate) async fn env_lock() -> OwnedMutexGuard<()> {
+    static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+    let lock = LOCK.get_or_init(|| Arc::new(Mutex::new(()))).clone();
+    lock.lock_owned().await
 }
 
 pub(crate) fn set_test_env() {
@@ -42,7 +44,7 @@ pub(crate) fn set_test_env() {
     std::env::set_var("REDIS_HOST", "127.0.0.1");
     std::env::set_var("REDIS_PORT", "6379");
     std::env::set_var("REDIS_DB", TEST_REDIS_DB);
-    // Keep REDIS_PASSWORD from .env if set (don't remove it)
+    std::env::remove_var("REDIS_PASSWORD");
     std::env::set_var("PROMETHEUS_ENABLED", "0");
     std::env::remove_var("S3_ENDPOINT");
     std::env::remove_var("S3_ACCESS_KEY");
@@ -61,7 +63,7 @@ pub(crate) fn set_test_storage_env() {
 }
 
 pub(crate) async fn setup_test_context() -> TestContext {
-    let guard = env_lock();
+    let guard = env_lock().await;
     set_test_env();
 
     let settings = Settings::load().expect("settings");
@@ -78,7 +80,7 @@ pub(crate) async fn setup_test_context() -> TestContext {
 }
 
 pub(crate) async fn setup_test_context_with_storage() -> TestContext {
-    let guard = env_lock();
+    let guard = env_lock().await;
     set_test_env();
     set_test_storage_env();
 
@@ -105,6 +107,7 @@ async fn prepare_db(settings: &Settings) -> PgPool {
         .expect("current database");
     assert_eq!(current_db, "picrete_rust_test");
 
+    reset_public_schema(&db).await.expect("reset schema");
     ensure_schema(&db).await.expect("schema");
     let has_id: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM information_schema.columns \
@@ -119,11 +122,16 @@ async fn prepare_db(settings: &Settings) -> PgPool {
     db
 }
 
+async fn reset_public_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query("DROP SCHEMA IF EXISTS public CASCADE").execute(pool).await?;
+    sqlx::query("CREATE SCHEMA public").execute(pool).await?;
+    Ok(())
+}
+
 pub(crate) async fn ensure_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
-    sqlx::migrate!("./migrations")
-        .run(pool)
-        .await
-        .map_err(|e| sqlx::Error::Configuration(e.into()))?;
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.set_ignore_missing(true);
+    migrator.run(pool).await.map_err(|e| sqlx::Error::Configuration(e.into()))?;
     Ok(())
 }
 

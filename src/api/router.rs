@@ -132,7 +132,7 @@ mod tests {
 
     #[tokio::test]
     async fn root_returns_message() {
-        let _guard = test_support::env_lock();
+        let _guard = test_support::env_lock().await;
         std::env::set_var("SECRET_KEY", "test-secret");
         std::env::remove_var("PROMETHEUS_ENABLED");
 
@@ -147,12 +147,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["message"], "Picrete Rust API");
+        assert_eq!(json["message"], "Picrete API");
     }
 
     #[tokio::test]
     async fn metrics_disabled_returns_404() {
-        let _guard = test_support::env_lock();
+        let _guard = test_support::env_lock().await;
         std::env::set_var("SECRET_KEY", "test-secret");
         std::env::remove_var("PROMETHEUS_ENABLED");
 
@@ -169,7 +169,7 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_enabled_returns_200() {
-        let _guard = test_support::env_lock();
+        let _guard = test_support::env_lock().await;
         std::env::set_var("SECRET_KEY", "test-secret");
         std::env::set_var("PROMETHEUS_ENABLED", "1");
 

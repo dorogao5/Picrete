@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::api::errors::ApiError;
 pub(crate) use crate::core::time::primitive_now_utc as now_primitive;
-use crate::db::models::{Exam, ExamSession, Submission, TaskType};
+use crate::db::models::{Exam, ExamSession, Submission, TaskType, TaskVariant};
 use crate::db::types::{SessionStatus, SubmissionStatus};
 use crate::repositories;
 use crate::schemas::submission::{
@@ -134,15 +134,26 @@ pub(crate) async fn build_task_context_from_assignments(
     assignments: &HashMap<String, String>,
 ) -> Result<Vec<serde_json::Value>, ApiError> {
     let task_types = fetch_task_types(pool, exam_id).await?;
+    let task_type_ids = task_types.iter().map(|task_type| task_type.id.clone()).collect::<Vec<_>>();
+    let variants = repositories::task_types::list_variants_by_task_type_ids(pool, &task_type_ids)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch variants"))?;
+
+    let mut variants_by_task_id = HashMap::<String, HashMap<String, TaskVariant>>::new();
+    for variant in variants {
+        variants_by_task_id
+            .entry(variant.task_type_id.clone())
+            .or_default()
+            .insert(variant.id.clone(), variant);
+    }
+
     let mut tasks = Vec::new();
 
     for task_type in task_types {
-        let variants = repositories::task_types::list_variants(pool, &task_type.id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to fetch variants"))?;
-
         if let Some(variant_id) = assignments.get(&task_type.id) {
-            if let Some(variant) = variants.into_iter().find(|v| &v.id == variant_id) {
+            if let Some(variant) =
+                variants_by_task_id.get(&task_type.id).and_then(|variants| variants.get(variant_id))
+            {
                 tasks.push(serde_json::json!({
                     "task_type": {
                         "id": task_type.id,
@@ -178,9 +189,14 @@ pub(crate) async fn enforce_deadline(
     if OffsetDateTime::now_utc().unix_timestamp() >= hard_deadline.assume_utc().unix_timestamp()
         && session.status == SessionStatus::Active
     {
-        repositories::sessions::update_status(pool, &session.id, SessionStatus::Expired)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to update session status"))?;
+        repositories::sessions::expire_with_deadline(
+            pool,
+            &session.id,
+            hard_deadline,
+            now_primitive(),
+        )
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to expire session"))?;
         return Ok((hard_deadline, SessionStatus::Expired));
     }
 

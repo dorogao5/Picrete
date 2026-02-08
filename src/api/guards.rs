@@ -45,6 +45,10 @@ impl FromRequestParts<AppState> for CurrentUser {
             return Err(ApiError::Unauthorized("User not found"));
         };
 
+        if !user.is_active {
+            return Err(ApiError::Unauthorized("Invalid authentication credentials"));
+        }
+
         Ok(CurrentUser(user))
     }
 }

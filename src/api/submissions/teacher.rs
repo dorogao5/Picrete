@@ -251,10 +251,16 @@ pub(super) async fn grading_status(
     };
 
     let is_owner = submission.student_id == user.id;
-    let is_teacher = matches!(user.role, UserRole::Teacher | UserRole::Admin);
-
-    if !is_owner && !is_teacher {
-        return Err(ApiError::Forbidden("Access denied"));
+    if !is_owner {
+        match user.role {
+            UserRole::Admin => {}
+            UserRole::Teacher => {
+                ensure_teacher_can_manage_submission(&state, &user, &submission_id).await?;
+            }
+            _ => {
+                return Err(ApiError::Forbidden("Access denied"));
+            }
+        }
     }
 
     let (progress, status_message) = match submission.status {

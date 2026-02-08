@@ -70,10 +70,7 @@ pub(in crate::api::submissions) async fn enter_exam(
         .await
         .map_err(|e| ApiError::internal(e, "Failed to start transaction"))?;
 
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
-        .bind(&exam_id)
-        .bind(&user.id)
-        .fetch_one(&mut *tx)
+    repositories::sessions::acquire_exam_user_lock(&mut *tx, &exam_id, &user.id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to acquire session lock"))?;
 
@@ -86,9 +83,7 @@ pub(in crate::api::submissions) async fn enter_exam(
         return Ok(Json(crate::api::submissions::helpers::session_to_response(session)));
     }
 
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-        .bind("exam_sessions_active_capacity")
-        .fetch_one(&mut *tx)
+    repositories::sessions::acquire_global_lock(&mut *tx, "exam_sessions_active_capacity")
         .await
         .map_err(|e| ApiError::internal(e, "Failed to acquire capacity lock"))?;
 
@@ -169,49 +164,21 @@ pub(in crate::api::submissions) async fn get_session_variant(
         return Err(ApiError::BadRequest("Session has expired".to_string()));
     }
 
-    let task_types =
-        crate::api::submissions::helpers::fetch_task_types(state.db(), &session.exam_id).await?;
-    let mut tasks = Vec::new();
-
-    let assignments = session.variant_assignments.0.clone();
-
-    for task_type in task_types {
-        let variants = repositories::task_types::list_variants(state.db(), &task_type.id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to fetch variants"))?;
-
-        if let Some(variant_id) = assignments.get(&task_type.id) {
-            if let Some(variant) = variants.into_iter().find(|v| &v.id == variant_id) {
-                tasks.push(serde_json::json!({
-                    "task_type": {
-                        "id": task_type.id,
-                        "title": task_type.title,
-                        "description": task_type.description,
-                        "order_index": task_type.order_index,
-                        "max_score": task_type.max_score,
-                        "formulas": task_type.formulas.0,
-                        "units": task_type.units.0,
-                    },
-                    "variant": {
-                        "id": variant.id,
-                        "content": variant.content,
-                        "parameters": variant.parameters.0,
-                        "attachments": variant.attachments.0,
-                    }
-                }));
-            }
-        }
-    }
+    let tasks = crate::api::submissions::helpers::build_task_context_from_assignments(
+        state.db(),
+        &session.exam_id,
+        &session.variant_assignments.0,
+    )
+    .await?;
 
     let remaining_seconds =
         hard_deadline.assume_utc().unix_timestamp() - OffsetDateTime::now_utc().unix_timestamp();
     let remaining = if remaining_seconds < 0 { 0 } else { remaining_seconds };
 
     // Include already-uploaded images so the client can restore state after refresh
-    let submission_id_opt =
-        repositories::submissions::find_id_by_session(state.db(), &session_id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
+    let submission_id_opt = repositories::submissions::find_id_by_session(state.db(), &session_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
     let existing_images: Vec<serde_json::Value> = match submission_id_opt {
         Some(submission_id) => {
             let images =

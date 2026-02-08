@@ -33,7 +33,7 @@ pub(crate) async fn healthz(State(state): State<AppState>) -> Json<HealthRespons
         }
     }
 
-    match sqlx::query("SELECT 1").execute(state.db()).await {
+    match crate::repositories::health::ping(state.db()).await {
         Ok(_) => {
             components.insert("database".to_string(), "healthy".to_string());
         }
@@ -49,7 +49,7 @@ pub(crate) async fn healthz(State(state): State<AppState>) -> Json<HealthRespons
 pub(crate) async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     let mut components = HashMap::new();
 
-    match sqlx::query("SELECT 1").execute(state.db()).await {
+    match crate::repositories::health::ping(state.db()).await {
         Ok(_) => {
             components.insert("database".to_string(), "ready".to_string());
             (

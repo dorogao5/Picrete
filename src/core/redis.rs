@@ -85,7 +85,7 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limit_enforces_limit() {
-        let _guard = test_support::env_lock();
+        let _guard = test_support::env_lock().await;
         test_support::set_test_env();
 
         let settings = Settings::load().expect("settings");
@@ -104,7 +104,7 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limit_denies_when_disconnected() {
-        let _guard = test_support::env_lock();
+        let _guard = test_support::env_lock().await;
         test_support::set_test_env();
 
         let settings = Settings::load().expect("settings");

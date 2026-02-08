@@ -9,11 +9,9 @@ use crate::api::validation::{validate_isu, validate_password_len};
 use crate::core::security;
 use crate::core::state::AppState;
 use crate::core::time::primitive_now_utc;
-use crate::db::models::User;
 use crate::db::types::UserRole;
 use crate::repositories;
 use crate::schemas::user::{AdminUserCreate, AdminUserUpdate, UserResponse};
-use sqlx::{Postgres, QueryBuilder};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct UserListQuery {
@@ -49,115 +47,21 @@ async fn list_users(
     CurrentAdmin(_admin): CurrentAdmin,
     state: axum::extract::State<AppState>,
 ) -> Result<Json<PaginatedResponse<UserResponse>>, ApiError> {
-    let mut builder = QueryBuilder::<Postgres>::new(
-        "SELECT id, isu, hashed_password, full_name, role, is_active, is_verified,
-                pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at,
-                terms_version, privacy_version, created_at, updated_at
-         FROM users",
-    );
-    let mut has_where = false;
-
-    if let Some(isu) = params.isu.as_ref() {
-        if !has_where {
-            builder.push(" WHERE ");
-            has_where = true;
-        } else {
-            builder.push(" AND ");
-        }
-        builder.push("isu = ");
-        builder.push_bind(isu);
-    }
-    if let Some(role) = params.role {
-        if !has_where {
-            builder.push(" WHERE ");
-            has_where = true;
-        } else {
-            builder.push(" AND ");
-        }
-        builder.push("role = ");
-        builder.push_bind(role);
-    }
-    if let Some(is_active) = params.is_active {
-        if !has_where {
-            builder.push(" WHERE ");
-            has_where = true;
-        } else {
-            builder.push(" AND ");
-        }
-        builder.push("is_active = ");
-        builder.push_bind(is_active);
-    }
-    if let Some(is_verified) = params.is_verified {
-        if !has_where {
-            builder.push(" WHERE ");
-        } else {
-            builder.push(" AND ");
-        }
-        builder.push("is_verified = ");
-        builder.push_bind(is_verified);
-    }
-
-    builder.push(" ORDER BY created_at DESC");
-    builder.push(" OFFSET ");
-    builder.push_bind(params.skip.max(0));
-    builder.push(" LIMIT ");
-    builder.push_bind(params.limit.clamp(1, 1000));
-
-    let users = builder
-        .build_query_as::<User>()
-        .fetch_all(state.db())
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to list users"))?;
-    let mut count_builder = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM users");
-    let mut has_where = false;
-
-    if let Some(isu) = params.isu.as_ref() {
-        if !has_where {
-            count_builder.push(" WHERE ");
-            has_where = true;
-        } else {
-            count_builder.push(" AND ");
-        }
-        count_builder.push("isu = ");
-        count_builder.push_bind(isu);
-    }
-    if let Some(role) = params.role {
-        if !has_where {
-            count_builder.push(" WHERE ");
-            has_where = true;
-        } else {
-            count_builder.push(" AND ");
-        }
-        count_builder.push("role = ");
-        count_builder.push_bind(role);
-    }
-    if let Some(is_active) = params.is_active {
-        if !has_where {
-            count_builder.push(" WHERE ");
-            has_where = true;
-        } else {
-            count_builder.push(" AND ");
-        }
-        count_builder.push("is_active = ");
-        count_builder.push_bind(is_active);
-    }
-    if let Some(is_verified) = params.is_verified {
-        if !has_where {
-            count_builder.push(" WHERE ");
-        } else {
-            count_builder.push(" AND ");
-        }
-        count_builder.push("is_verified = ");
-        count_builder.push_bind(is_verified);
-    }
-
-    let total_count = count_builder
-        .build_query_scalar::<i64>()
-        .fetch_one(state.db())
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to count users"))?;
     let skip = params.skip.max(0);
     let limit = params.limit.clamp(1, 1000);
+    let filters = repositories::users::UserListFilters {
+        isu: params.isu.as_deref(),
+        role: params.role,
+        is_active: params.is_active,
+        is_verified: params.is_verified,
+    };
+
+    let users = repositories::users::list(state.db(), filters, skip, limit)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to list users"))?;
+    let total_count = repositories::users::count(state.db(), filters)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to count users"))?;
 
     Ok(Json(PaginatedResponse {
         items: users.into_iter().map(UserResponse::from_db).collect(),
@@ -293,136 +197,4 @@ async fn update_user(
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::api::pagination::default_limit;
-    use axum::http::{Method, StatusCode};
-    use serde_json::json;
-    use tower::ServiceExt;
-
-    use crate::db::types::UserRole;
-    use crate::test_support;
-
-    #[tokio::test]
-    async fn admin_can_create_and_update_user() {
-        let ctx = test_support::setup_test_context().await;
-
-        let admin = test_support::insert_user(
-            ctx.state.db(),
-            "000001",
-            "Admin User",
-            UserRole::Admin,
-            "admin-pass",
-        )
-        .await;
-        let token = test_support::bearer_token(&admin.id, ctx.state.settings());
-
-        let create_payload = json!({
-            "isu": "123456",
-            "full_name": "Student User",
-            "password": "student-pass",
-            "role": "student",
-            "is_active": true,
-            "is_verified": false
-        });
-
-        let response = ctx
-            .app
-            .clone()
-            .oneshot(test_support::json_request(
-                Method::POST,
-                "/api/v1/users",
-                Some(&token),
-                Some(create_payload),
-            ))
-            .await
-            .expect("create user");
-
-        let status = response.status();
-        let created = test_support::read_json(response).await;
-        assert_eq!(status, StatusCode::CREATED, "response: {created}");
-        let user_id = created["id"].as_str().expect("user id").to_string();
-        assert_eq!(created["isu"], "123456");
-        assert_eq!(created["full_name"], "Student User");
-        assert_eq!(created["role"], "student");
-
-        let update_payload = json!({
-            "full_name": "Updated Student",
-            "is_active": false
-        });
-
-        let response = ctx
-            .app
-            .clone()
-            .oneshot(test_support::json_request(
-                Method::PATCH,
-                &format!("/api/v1/users/{user_id}"),
-                Some(&token),
-                Some(update_payload),
-            ))
-            .await
-            .expect("update user");
-
-        let status = response.status();
-        let updated = test_support::read_json(response).await;
-        assert_eq!(status, StatusCode::OK, "response: {updated}");
-        assert_eq!(updated["full_name"], "Updated Student");
-        assert_eq!(updated["is_active"], false);
-
-        let response = ctx
-            .app
-            .oneshot(test_support::json_request(
-                Method::GET,
-                &format!("/api/v1/users/{user_id}"),
-                Some(&token),
-                None,
-            ))
-            .await
-            .expect("get user");
-
-        let status = response.status();
-        let fetched = test_support::read_json(response).await;
-        assert_eq!(status, StatusCode::OK, "response: {fetched}");
-        assert_eq!(fetched["full_name"], "Updated Student");
-    }
-
-    #[tokio::test]
-    async fn admin_create_user_rejects_short_password() {
-        let ctx = test_support::setup_test_context().await;
-
-        let admin = test_support::insert_user(
-            ctx.state.db(),
-            "000051",
-            "Admin User",
-            UserRole::Admin,
-            "admin-pass",
-        )
-        .await;
-        let token = test_support::bearer_token(&admin.id, ctx.state.settings());
-
-        let response = ctx
-            .app
-            .oneshot(test_support::json_request(
-                Method::POST,
-                "/api/v1/users",
-                Some(&token),
-                Some(json!({
-                    "isu": "123450",
-                    "full_name": "Short Password",
-                    "password": "short",
-                    "role": "student"
-                })),
-            ))
-            .await
-            .expect("create user");
-
-        let status = response.status();
-        let body = test_support::read_json(response).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "response: {body}");
-        assert!(body["detail"].as_str().unwrap_or("").contains("Password must be at least"));
-    }
-
-    #[test]
-    fn default_limit_is_positive() {
-        assert!(default_limit() > 0);
-    }
-}
+mod tests;

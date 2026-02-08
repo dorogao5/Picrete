@@ -54,9 +54,14 @@ fn exam_payload() -> serde_json::Value {
 async fn teacher_can_create_publish_and_list_exam() {
     let ctx = test_support::setup_test_context().await;
 
-    let teacher =
-        test_support::insert_user(ctx.state.db(), "000002", "Teacher User", UserRole::Teacher, "teacher-pass")
-            .await;
+    let teacher = test_support::insert_user(
+        ctx.state.db(),
+        "000002",
+        "Teacher User",
+        UserRole::Teacher,
+        "teacher-pass",
+    )
+    .await;
     let token = test_support::bearer_token(&teacher.id, ctx.state.settings());
 
     let response = ctx
@@ -109,7 +114,7 @@ async fn teacher_can_create_publish_and_list_exam() {
     let status = response.status();
     let list = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::OK, "response: {list}");
-    let items = list.as_array().expect("exam list");
+    let items = list["items"].as_array().expect("exam list");
     assert!(items.iter().any(|item| item["id"] == exam_id));
 }
 
@@ -117,9 +122,14 @@ async fn teacher_can_create_publish_and_list_exam() {
 async fn teacher_cannot_access_other_teachers_exam_management_endpoints() {
     let ctx = test_support::setup_test_context().await;
 
-    let owner =
-        test_support::insert_user(ctx.state.db(), "000102", "Owner Teacher", UserRole::Teacher, "teacher-pass")
-            .await;
+    let owner = test_support::insert_user(
+        ctx.state.db(),
+        "000102",
+        "Owner Teacher",
+        UserRole::Teacher,
+        "teacher-pass",
+    )
+    .await;
     let intruder = test_support::insert_user(
         ctx.state.db(),
         "000103",
