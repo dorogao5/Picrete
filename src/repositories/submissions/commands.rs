@@ -9,10 +9,11 @@ use super::types::PreliminaryUpdate;
 pub(crate) async fn claim_next_for_processing(
     pool: &PgPool,
     now: PrimitiveDateTime,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar::<_, String>(
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    sqlx::query_as::<_, (String, String)>(
         "WITH candidate AS (
-            SELECT id FROM submissions
+            SELECT id, course_id
+            FROM submissions
             WHERE status IN ($1, $2)
               AND ai_request_started_at IS NULL
             ORDER BY CASE WHEN status = $1 THEN 0 ELSE 1 END,
@@ -27,7 +28,8 @@ pub(crate) async fn claim_next_for_processing(
             ai_error = NULL
         FROM candidate
         WHERE submissions.id = candidate.id
-        RETURNING submissions.id",
+          AND submissions.course_id = candidate.course_id
+        RETURNING submissions.id, submissions.course_id",
     )
     .bind(SubmissionStatus::Uploaded)
     .bind(SubmissionStatus::Processing)
@@ -39,7 +41,8 @@ pub(crate) async fn claim_next_for_processing(
 
 pub(crate) async fn mark_preliminary(
     pool: &PgPool,
-    id: &str,
+    course_id: &str,
+    submission_id: &str,
     params: PreliminaryUpdate,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -55,7 +58,7 @@ pub(crate) async fn mark_preliminary(
              is_flagged = FALSE,
              flag_reasons = $8,
              updated_at = $9
-         WHERE id = $10",
+         WHERE course_id = $10 AND id = $11",
     )
     .bind(SubmissionStatus::Preliminary)
     .bind(params.ai_score)
@@ -66,7 +69,8 @@ pub(crate) async fn mark_preliminary(
     .bind(params.duration_seconds)
     .bind(Json(Vec::<String>::new()))
     .bind(params.completed_at)
-    .bind(id)
+    .bind(course_id)
+    .bind(submission_id)
     .execute(pool)
     .await?;
 
@@ -75,6 +79,7 @@ pub(crate) async fn mark_preliminary(
 
 pub(crate) async fn queue_uploaded_for_processing_by_exam(
     pool: &PgPool,
+    course_id: &str,
     exam_id: &str,
     now: PrimitiveDateTime,
 ) -> Result<Vec<String>, sqlx::Error> {
@@ -84,14 +89,17 @@ pub(crate) async fn queue_uploaded_for_processing_by_exam(
              ai_request_started_at = NULL,
              updated_at = $2
          FROM exam_sessions es
-         WHERE es.id = s.session_id
-           AND es.exam_id = $3
-           AND s.status = $4
+         WHERE es.course_id = s.course_id
+           AND es.id = s.session_id
+           AND s.course_id = $3
+           AND es.exam_id = $4
+           AND s.status = $5
            AND s.ai_request_started_at IS NULL
          RETURNING s.id",
     )
     .bind(SubmissionStatus::Processing)
     .bind(now)
+    .bind(course_id)
     .bind(exam_id)
     .bind(SubmissionStatus::Uploaded)
     .fetch_all(pool)
@@ -100,6 +108,7 @@ pub(crate) async fn queue_uploaded_for_processing_by_exam(
 
 pub(crate) async fn requeue_failed(
     pool: &PgPool,
+    course_id: &str,
     submission_id: &str,
     now: PrimitiveDateTime,
 ) -> Result<bool, sqlx::Error> {
@@ -110,10 +119,11 @@ pub(crate) async fn requeue_failed(
              ai_error = NULL,
              ai_request_started_at = NULL,
              updated_at = $2
-         WHERE id = $3",
+         WHERE course_id = $3 AND id = $4",
     )
     .bind(SubmissionStatus::Processing)
     .bind(now)
+    .bind(course_id)
     .bind(submission_id)
     .execute(pool)
     .await?;
@@ -123,6 +133,7 @@ pub(crate) async fn requeue_failed(
 
 pub(crate) async fn flag(
     pool: &PgPool,
+    course_id: &str,
     submission_id: &str,
     reason: &str,
     flag_reasons: Vec<String>,
@@ -140,7 +151,7 @@ pub(crate) async fn flag(
                  ai_request_duration_seconds = $5,
                  ai_retry_count = COALESCE(ai_retry_count,0) + 1,
                  updated_at = $6
-             WHERE id = $7",
+             WHERE course_id = $7 AND id = $8",
         )
         .bind(SubmissionStatus::Flagged)
         .bind(reason)
@@ -148,6 +159,7 @@ pub(crate) async fn flag(
         .bind(now)
         .bind(0.0)
         .bind(now)
+        .bind(course_id)
         .bind(submission_id)
         .execute(pool)
         .await?;
@@ -161,7 +173,7 @@ pub(crate) async fn flag(
                  ai_request_completed_at = $4,
                  ai_request_duration_seconds = $5,
                  updated_at = $6
-             WHERE id = $7",
+             WHERE course_id = $7 AND id = $8",
         )
         .bind(SubmissionStatus::Flagged)
         .bind(reason)
@@ -169,6 +181,7 @@ pub(crate) async fn flag(
         .bind(now)
         .bind(0.0)
         .bind(now)
+        .bind(course_id)
         .bind(submission_id)
         .execute(pool)
         .await?;
@@ -181,6 +194,7 @@ pub(crate) async fn flag(
 pub(crate) async fn create_if_absent(
     pool: &PgPool,
     id: &str,
+    course_id: &str,
     session_id: &str,
     student_id: &str,
     status: SubmissionStatus,
@@ -189,11 +203,12 @@ pub(crate) async fn create_if_absent(
     now: PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO submissions (id, session_id, student_id, status, max_score, submitted_at, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        "INSERT INTO submissions (id, course_id, session_id, student_id, status, max_score, submitted_at, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (session_id) DO NOTHING",
     )
     .bind(id)
+    .bind(course_id)
     .bind(session_id)
     .bind(student_id)
     .bind(status)
@@ -208,6 +223,7 @@ pub(crate) async fn create_if_absent(
 
 pub(crate) async fn update_status_by_session(
     pool: &PgPool,
+    course_id: &str,
     session_id: &str,
     status: SubmissionStatus,
     submitted_at: PrimitiveDateTime,
@@ -215,11 +231,13 @@ pub(crate) async fn update_status_by_session(
     sqlx::query(
         "UPDATE submissions
          SET status = $1, submitted_at = $2, updated_at = $2
-         WHERE session_id = $3
-           AND status NOT IN ($4, $5, $6, $7, $8)",
+         WHERE course_id = $3
+           AND session_id = $4
+           AND status NOT IN ($5, $6, $7, $8, $9)",
     )
     .bind(status)
     .bind(submitted_at)
+    .bind(course_id)
     .bind(session_id)
     .bind(SubmissionStatus::Processing)
     .bind(SubmissionStatus::Preliminary)
@@ -233,6 +251,7 @@ pub(crate) async fn update_status_by_session(
 
 pub(crate) async fn approve(
     pool: &PgPool,
+    course_id: &str,
     id: &str,
     ai_score: Option<f64>,
     teacher_comments: Option<String>,
@@ -240,14 +259,20 @@ pub(crate) async fn approve(
     now: PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE submissions SET status = $1, final_score = $2, teacher_comments = $3,
-            reviewed_by = $4, reviewed_at = $5 WHERE id = $6",
+        "UPDATE submissions
+         SET status = $1,
+             final_score = $2,
+             teacher_comments = $3,
+             reviewed_by = $4,
+             reviewed_at = $5
+         WHERE course_id = $6 AND id = $7",
     )
     .bind(SubmissionStatus::Approved)
     .bind(ai_score)
     .bind(teacher_comments)
     .bind(reviewed_by)
     .bind(now)
+    .bind(course_id)
     .bind(id)
     .execute(pool)
     .await?;
@@ -256,6 +281,7 @@ pub(crate) async fn approve(
 
 pub(crate) async fn override_score(
     pool: &PgPool,
+    course_id: &str,
     id: &str,
     final_score: f64,
     teacher_comments: String,
@@ -263,14 +289,20 @@ pub(crate) async fn override_score(
     now: PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE submissions SET final_score = $1, teacher_comments = $2,
-            status = $3, reviewed_by = $4, reviewed_at = $5 WHERE id = $6",
+        "UPDATE submissions
+         SET final_score = $1,
+             teacher_comments = $2,
+             status = $3,
+             reviewed_by = $4,
+             reviewed_at = $5
+         WHERE course_id = $6 AND id = $7",
     )
     .bind(final_score)
     .bind(teacher_comments)
     .bind(SubmissionStatus::Approved)
     .bind(reviewed_by)
     .bind(now)
+    .bind(course_id)
     .bind(id)
     .execute(pool)
     .await?;
@@ -279,25 +311,28 @@ pub(crate) async fn override_score(
 
 pub(crate) async fn queue_regrade(
     pool: &PgPool,
+    course_id: &str,
     id: &str,
     now: PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE submissions SET status = $1,
-            ai_retry_count = COALESCE(ai_retry_count,0) + 1,
-            ai_error = NULL,
-            ai_request_started_at = NULL,
-            ai_request_completed_at = NULL,
-            ai_request_duration_seconds = NULL,
-            ai_processed_at = NULL,
-            is_flagged = FALSE,
-            flag_reasons = $2,
-            updated_at = $3
-         WHERE id = $4",
+        "UPDATE submissions
+         SET status = $1,
+             ai_retry_count = COALESCE(ai_retry_count,0) + 1,
+             ai_error = NULL,
+             ai_request_started_at = NULL,
+             ai_request_completed_at = NULL,
+             ai_request_duration_seconds = NULL,
+             ai_processed_at = NULL,
+             is_flagged = FALSE,
+             flag_reasons = $2,
+             updated_at = $3
+         WHERE course_id = $4 AND id = $5",
     )
     .bind(SubmissionStatus::Processing)
     .bind(sqlx::types::Json(Vec::<String>::new()))
     .bind(now)
+    .bind(course_id)
     .bind(id)
     .execute(pool)
     .await?;

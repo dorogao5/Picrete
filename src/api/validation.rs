@@ -3,12 +3,20 @@ use std::path::Path;
 
 pub(crate) const MIN_PASSWORD_LEN: usize = 8;
 
-pub(crate) fn validate_isu(isu: &str) -> Result<(), ApiError> {
-    let valid = isu.len() == 6 && isu.chars().all(|c| c.is_ascii_digit());
+pub(crate) fn validate_username(username: &str) -> Result<(), ApiError> {
+    let trimmed = username.trim();
+    if trimmed.len() < 3 || trimmed.len() > 64 {
+        return Err(ApiError::BadRequest(
+            "Username must contain from 3 to 64 characters".to_string(),
+        ));
+    }
+
+    let valid = trimmed.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+
     if valid {
         Ok(())
     } else {
-        Err(ApiError::BadRequest("Invalid ISU format".to_string()))
+        Err(ApiError::BadRequest("Username contains unsupported characters".to_string()))
     }
 }
 

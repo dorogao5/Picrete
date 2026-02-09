@@ -1,3 +1,6 @@
+pub(crate) mod course_invites;
+pub(crate) mod course_memberships;
+pub(crate) mod courses;
 pub(crate) mod exams;
 pub(crate) mod health;
 pub(crate) mod images;

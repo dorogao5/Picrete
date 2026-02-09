@@ -10,15 +10,16 @@ use uuid::Uuid;
 
 use crate::api::errors::ApiError;
 use crate::api::guards::CurrentUser;
-use crate::api::validation::{validate_isu, validate_password_len};
+use crate::api::validation::{validate_password_len, validate_username};
 use crate::core::security;
 use crate::core::state::AppState;
 use crate::core::time::primitive_now_utc;
 use crate::db::models::User;
-use crate::db::types::UserRole;
 use crate::repositories;
-use crate::schemas::auth::TokenResponse;
+use crate::schemas::auth::{AuthMeResponse, TokenResponse};
+use crate::schemas::course::MembershipResponse;
 use crate::schemas::user::{UserCreate, UserLogin, UserResponse};
+use crate::services::{invite_codes, membership_policy};
 
 /// Max attempts per window for auth endpoints (login/signup/token).
 const AUTH_RATE_LIMIT: u64 = 10;
@@ -43,10 +44,10 @@ async fn signup(
     State(state): State<AppState>,
     Json(payload): Json<UserCreate>,
 ) -> Result<(StatusCode, Json<TokenResponse>), ApiError> {
-    validate_isu(&payload.isu)?;
+    validate_username(&payload.username)?;
     validate_password_len(&payload.password)?;
 
-    let rate_key = format!("rl:signup:{}", payload.isu);
+    let rate_key = format!("rl:signup:{}", payload.username);
     let allowed = match state
         .redis()
         .rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
@@ -66,12 +67,12 @@ async fn signup(
         return Err(ApiError::BadRequest("Personal data consent is required".to_string()));
     }
 
-    let existing = repositories::users::exists_by_isu(state.db(), &payload.isu)
+    let existing = repositories::users::exists_by_username(state.db(), &payload.username)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to check existing user"))?;
 
     if existing.is_some() {
-        return Err(ApiError::Conflict("User with this ISU already exists".to_string()));
+        return Err(ApiError::Conflict("User with this username already exists".to_string()));
     }
 
     let hashed_password = security::hash_password(&payload.password)
@@ -97,10 +98,10 @@ async fn signup(
         state.db(),
         repositories::users::CreateUser {
             id: &Uuid::new_v4().to_string(),
-            isu: &payload.isu,
+            username: &payload.username,
             hashed_password,
             full_name: &payload.full_name,
-            role: UserRole::Student,
+            is_platform_admin: false,
             is_active: true,
             is_verified: false,
             pd_consent: true,
@@ -116,6 +117,20 @@ async fn signup(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to create user"))?;
 
+    if let Some(invite_code) = payload.invite_code.as_deref() {
+        join_with_invite(
+            &state,
+            &user,
+            invite_code,
+            payload.identity_payload.clone(),
+            now_primitive,
+        )
+        .await?;
+    }
+
+    let memberships = load_memberships(&state, &user).await?;
+    let active_course_id = memberships.first().map(|membership| membership.course_id.clone());
+
     let token = security::create_access_token(&user.id, state.settings(), None)
         .map_err(|e| ApiError::internal(e, "Failed to create access token"))?;
 
@@ -123,6 +138,8 @@ async fn signup(
         access_token: token,
         token_type: "bearer".to_string(),
         user: UserResponse::from_db(user),
+        memberships,
+        active_course_id,
     };
 
     Ok((StatusCode::CREATED, Json(response)))
@@ -132,10 +149,10 @@ async fn login(
     State(state): State<AppState>,
     Json(payload): Json<UserLogin>,
 ) -> Result<Json<TokenResponse>, ApiError> {
-    validate_isu(&payload.isu)?;
+    validate_username(&payload.username)?;
     validate_password_len(&payload.password)?;
 
-    let rate_key = format!("rl:login:{}", payload.isu);
+    let rate_key = format!("rl:login:{}", payload.username);
     let allowed = match state
         .redis()
         .rate_limit(&rate_key, AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
@@ -151,13 +168,13 @@ async fn login(
         return Err(ApiError::TooManyRequests("Too many login attempts, try again later"));
     }
 
-    let user = fetch_user_by_isu(&state, &payload.isu).await?;
+    let user = fetch_user_by_username(&state, &payload.username).await?;
 
     let verified = security::verify_password(&payload.password, &user.hashed_password)
-        .map_err(|_| ApiError::Unauthorized("Incorrect ISU or password"))?;
+        .map_err(|_| ApiError::Unauthorized("Incorrect username or password"))?;
 
     if !verified {
-        return Err(ApiError::Unauthorized("Incorrect ISU or password"));
+        return Err(ApiError::Unauthorized("Incorrect username or password"));
     }
 
     if !user.is_active {
@@ -167,10 +184,15 @@ async fn login(
     let token = security::create_access_token(&user.id, state.settings(), None)
         .map_err(|e| ApiError::internal(e, "Failed to create access token"))?;
 
+    let memberships = load_memberships(&state, &user).await?;
+    let active_course_id = memberships.first().map(|membership| membership.course_id.clone());
+
     Ok(Json(TokenResponse {
         access_token: token,
         token_type: "bearer".to_string(),
         user: UserResponse::from_db(user),
+        memberships,
+        active_course_id,
     }))
 }
 
@@ -178,7 +200,7 @@ async fn token(
     State(state): State<AppState>,
     Form(payload): Form<OAuth2PasswordForm>,
 ) -> Result<Json<TokenResponse>, ApiError> {
-    validate_isu(&payload.username)?;
+    validate_username(&payload.username)?;
     validate_password_len(&payload.password)?;
 
     let rate_key = format!("rl:token:{}", payload.username);
@@ -197,13 +219,13 @@ async fn token(
         return Err(ApiError::TooManyRequests("Too many token attempts, try again later"));
     }
 
-    let user = fetch_user_by_isu(&state, &payload.username).await?;
+    let user = fetch_user_by_username(&state, &payload.username).await?;
 
     let verified = security::verify_password(&payload.password, &user.hashed_password)
-        .map_err(|_| ApiError::Unauthorized("Incorrect ISU or password"))?;
+        .map_err(|_| ApiError::Unauthorized("Incorrect username or password"))?;
 
     if !verified {
-        return Err(ApiError::Unauthorized("Incorrect ISU or password"));
+        return Err(ApiError::Unauthorized("Incorrect username or password"));
     }
 
     if !user.is_active {
@@ -213,20 +235,98 @@ async fn token(
     let token = security::create_access_token(&user.id, state.settings(), None)
         .map_err(|e| ApiError::internal(e, "Failed to create access token"))?;
 
+    let memberships = load_memberships(&state, &user).await?;
+    let active_course_id = memberships.first().map(|membership| membership.course_id.clone());
+
     Ok(Json(TokenResponse {
         access_token: token,
         token_type: "bearer".to_string(),
         user: UserResponse::from_db(user),
+        memberships,
+        active_course_id,
     }))
 }
 
-async fn me(CurrentUser(user): CurrentUser) -> Json<UserResponse> {
-    Json(UserResponse::from_db(user))
+async fn me(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+) -> Result<Json<AuthMeResponse>, ApiError> {
+    let memberships = load_memberships(&state, &user).await?;
+    let active_course_id = memberships.first().map(|membership| membership.course_id.clone());
+    Ok(Json(AuthMeResponse { user: UserResponse::from_db(user), memberships, active_course_id }))
 }
 
-async fn fetch_user_by_isu(state: &AppState, isu: &str) -> Result<User, ApiError> {
-    repositories::users::find_by_isu(state.db(), isu)
+async fn fetch_user_by_username(state: &AppState, username: &str) -> Result<User, ApiError> {
+    repositories::users::find_by_username(state.db(), username)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to load user"))?
-        .ok_or(ApiError::Unauthorized("Incorrect ISU or password"))
+        .ok_or(ApiError::Unauthorized("Incorrect username or password"))
+}
+
+async fn load_memberships(
+    state: &AppState,
+    user: &User,
+) -> Result<Vec<MembershipResponse>, ApiError> {
+    let memberships = repositories::course_memberships::list_for_user(state.db(), &user.id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch memberships"))?;
+
+    Ok(memberships
+        .into_iter()
+        .map(|membership| MembershipResponse {
+            membership_id: membership.membership_id,
+            course_id: membership.course_id,
+            course_slug: membership.course_slug,
+            course_title: membership.course_title,
+            status: membership.status,
+            joined_at: crate::core::time::format_primitive(membership.joined_at),
+            roles: membership.roles,
+        })
+        .collect())
+}
+
+async fn join_with_invite(
+    state: &AppState,
+    user: &User,
+    invite_code: &str,
+    identity_payload: serde_json::Value,
+    now: time::PrimitiveDateTime,
+) -> Result<(), ApiError> {
+    let code_hash = invite_codes::hash_invite_code(invite_code);
+    let invite = repositories::course_invites::find_active_by_hash(state.db(), &code_hash, now)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to load invite code"))?
+        .ok_or_else(|| ApiError::BadRequest("Invalid invite code".to_string()))?;
+
+    let policy = repositories::courses::find_identity_policy(state.db(), &invite.course_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to load identity policy"))?
+        .ok_or_else(|| ApiError::Internal("Identity policy is missing for course".to_string()))?;
+
+    membership_policy::validate_identity_payload(
+        &policy.rule_type,
+        &policy.rule_config.0,
+        &identity_payload,
+    )
+    .map_err(ApiError::UnprocessableEntity)?;
+
+    repositories::course_memberships::ensure_membership_with_role(
+        state.db(),
+        repositories::course_memberships::EnsureMembershipParams {
+            course_id: &invite.course_id,
+            user_id: &user.id,
+            invited_by: None,
+            identity_payload,
+            role: invite.role,
+            joined_at: now,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to upsert membership"))?;
+
+    repositories::course_invites::increment_usage(state.db(), &invite.id, now)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to update invite usage"))?;
+
+    Ok(())
 }

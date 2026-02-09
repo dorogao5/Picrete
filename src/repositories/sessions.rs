@@ -5,12 +5,13 @@ use crate::db::models::ExamSession;
 use crate::db::types::{SessionStatus, SubmissionStatus};
 
 pub(crate) const COLUMNS: &str = "\
-    id, exam_id, student_id, variant_seed, variant_assignments, \
+    id, course_id, exam_id, student_id, variant_seed, variant_assignments, \
     started_at, submitted_at, expires_at, status, attempt_number, \
     ip_address, user_agent, last_auto_save, auto_save_data, created_at, updated_at";
 
 pub(crate) struct CreateSession<'a> {
     pub(crate) id: &'a str,
+    pub(crate) course_id: &'a str,
     pub(crate) exam_id: &'a str,
     pub(crate) student_id: &'a str,
     pub(crate) variant_seed: i32,
@@ -26,36 +27,54 @@ pub(crate) struct CreateSession<'a> {
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct ActiveSessionDeadlineRow {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) expires_at: PrimitiveDateTime,
     pub(crate) exam_end_time: Option<PrimitiveDateTime>,
 }
 
 pub(crate) async fn find_by_id(
     pool: &PgPool,
+    course_id: &str,
     id: &str,
 ) -> Result<Option<ExamSession>, sqlx::Error> {
-    sqlx::query_as::<_, ExamSession>(&format!("SELECT {COLUMNS} FROM exam_sessions WHERE id = $1"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as::<_, ExamSession>(&format!(
+        "SELECT {COLUMNS}
+         FROM exam_sessions
+         WHERE course_id = $1 AND id = $2"
+    ))
+    .bind(course_id)
+    .bind(id)
+    .fetch_optional(pool)
+    .await
 }
 
-pub(crate) async fn fetch_one_by_id(pool: &PgPool, id: &str) -> Result<ExamSession, sqlx::Error> {
-    sqlx::query_as::<_, ExamSession>(&format!("SELECT {COLUMNS} FROM exam_sessions WHERE id = $1"))
-        .bind(id)
-        .fetch_one(pool)
-        .await
+pub(crate) async fn fetch_one_by_id(
+    pool: &PgPool,
+    course_id: &str,
+    id: &str,
+) -> Result<ExamSession, sqlx::Error> {
+    sqlx::query_as::<_, ExamSession>(&format!(
+        "SELECT {COLUMNS}
+         FROM exam_sessions
+         WHERE course_id = $1 AND id = $2"
+    ))
+    .bind(course_id)
+    .bind(id)
+    .fetch_one(pool)
+    .await
 }
 
 pub(crate) async fn find_active(
     executor: impl sqlx::PgExecutor<'_>,
+    course_id: &str,
     exam_id: &str,
     student_id: &str,
 ) -> Result<Option<ExamSession>, sqlx::Error> {
     sqlx::query_as::<_, ExamSession>(&format!(
         "SELECT {COLUMNS} FROM exam_sessions \
-         WHERE exam_id = $1 AND student_id = $2 AND status = $3"
+         WHERE course_id = $1 AND exam_id = $2 AND student_id = $3 AND status = $4"
     ))
+    .bind(course_id)
     .bind(exam_id)
     .bind(student_id)
     .bind(SessionStatus::Active)
@@ -65,30 +84,48 @@ pub(crate) async fn find_active(
 
 pub(crate) async fn count_by_exam_and_student(
     executor: impl sqlx::PgExecutor<'_>,
+    course_id: &str,
     exam_id: &str,
     student_id: &str,
 ) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT COUNT(*) FROM exam_sessions WHERE exam_id = $1 AND student_id = $2")
-        .bind(exam_id)
-        .bind(student_id)
-        .fetch_one(executor)
-        .await
+    sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM exam_sessions
+         WHERE course_id = $1 AND exam_id = $2 AND student_id = $3",
+    )
+    .bind(course_id)
+    .bind(exam_id)
+    .bind(student_id)
+    .fetch_one(executor)
+    .await
 }
 
 pub(crate) async fn list_by_student(
     pool: &PgPool,
+    course_id: &str,
     student_id: &str,
     status: Option<SubmissionStatus>,
     skip: i64,
     limit: i64,
 ) -> Result<Vec<ExamSession>, sqlx::Error> {
     let mut builder = QueryBuilder::<Postgres>::new(format!(
-        "SELECT {COLUMNS} FROM exam_sessions WHERE student_id = "
+        "SELECT {COLUMNS}
+         FROM exam_sessions
+         WHERE course_id = "
     ));
+    builder.push_bind(course_id);
+    builder.push(" AND student_id = ");
     builder.push_bind(student_id);
 
     if let Some(status) = status {
-        builder.push(" AND id IN (SELECT session_id FROM submissions WHERE status = ");
+        builder.push(
+            " AND id IN (
+                SELECT session_id
+                FROM submissions
+                WHERE course_id = ",
+        );
+        builder.push_bind(course_id);
+        builder.push(" AND status = ");
         builder.push_bind(status);
         builder.push(")");
     }
@@ -103,15 +140,28 @@ pub(crate) async fn list_by_student(
 
 pub(crate) async fn count_by_student(
     pool: &PgPool,
+    course_id: &str,
     student_id: &str,
     status: Option<SubmissionStatus>,
 ) -> Result<i64, sqlx::Error> {
-    let mut builder =
-        QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM exam_sessions WHERE student_id = ");
+    let mut builder = QueryBuilder::<Postgres>::new(
+        "SELECT COUNT(*)
+         FROM exam_sessions
+         WHERE course_id = ",
+    );
+    builder.push_bind(course_id);
+    builder.push(" AND student_id = ");
     builder.push_bind(student_id);
 
     if let Some(status) = status {
-        builder.push(" AND id IN (SELECT session_id FROM submissions WHERE status = ");
+        builder.push(
+            " AND id IN (
+                SELECT session_id
+                FROM submissions
+                WHERE course_id = ",
+        );
+        builder.push_bind(course_id);
+        builder.push(" AND status = ");
         builder.push_bind(status);
         builder.push(")");
     }
@@ -128,10 +178,12 @@ pub(crate) async fn count_active(executor: impl sqlx::PgExecutor<'_>) -> Result<
 
 pub(crate) async fn acquire_exam_user_lock(
     executor: impl sqlx::PgExecutor<'_>,
+    course_id: &str,
     exam_id: &str,
     student_id: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2 || ':' || $3))")
+        .bind(course_id)
         .bind(exam_id)
         .bind(student_id)
         .execute(executor)
@@ -156,12 +208,13 @@ pub(crate) async fn create(
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
         "INSERT INTO exam_sessions (
-            id, exam_id, student_id, variant_seed, variant_assignments,
+            id, course_id, exam_id, student_id, variant_seed, variant_assignments,
             started_at, expires_at, status, attempt_number, created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         ON CONFLICT DO NOTHING",
     )
     .bind(session.id)
+    .bind(session.course_id)
     .bind(session.exam_id)
     .bind(session.student_id)
     .bind(session.variant_seed)
@@ -180,30 +233,42 @@ pub(crate) async fn create(
 
 pub(crate) async fn update_auto_save(
     pool: &PgPool,
+    course_id: &str,
     id: &str,
     data: serde_json::Value,
     now: time::PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE exam_sessions SET auto_save_data = $1, last_auto_save = $2 WHERE id = $3")
-        .bind(data)
-        .bind(now)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE exam_sessions
+         SET auto_save_data = $1, last_auto_save = $2
+         WHERE course_id = $3 AND id = $4",
+    )
+    .bind(data)
+    .bind(now)
+    .bind(course_id)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 pub(crate) async fn submit(
     pool: &PgPool,
+    course_id: &str,
     id: &str,
     now: time::PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE exam_sessions SET status = $1, submitted_at = $2 WHERE id = $3")
-        .bind(SessionStatus::Submitted)
-        .bind(now)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE exam_sessions
+         SET status = $1, submitted_at = $2
+         WHERE course_id = $3 AND id = $4",
+    )
+    .bind(SessionStatus::Submitted)
+    .bind(now)
+    .bind(course_id)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -211,9 +276,9 @@ pub(crate) async fn list_active_with_exam_end(
     pool: &PgPool,
 ) -> Result<Vec<ActiveSessionDeadlineRow>, sqlx::Error> {
     sqlx::query_as::<_, ActiveSessionDeadlineRow>(
-        "SELECT s.id, s.expires_at, e.end_time AS exam_end_time
+        "SELECT s.id, s.course_id, s.expires_at, e.end_time AS exam_end_time
          FROM exam_sessions s
-         LEFT JOIN exams e ON e.id = s.exam_id
+         LEFT JOIN exams e ON e.course_id = s.course_id AND e.id = s.exam_id
          WHERE s.status = $1",
     )
     .bind(SessionStatus::Active)
@@ -223,6 +288,7 @@ pub(crate) async fn list_active_with_exam_end(
 
 pub(crate) async fn expire_with_deadline(
     pool: &PgPool,
+    course_id: &str,
     id: &str,
     hard_deadline: PrimitiveDateTime,
     updated_at: PrimitiveDateTime,
@@ -232,11 +298,12 @@ pub(crate) async fn expire_with_deadline(
          SET status = $1,
              submitted_at = COALESCE(submitted_at, $2),
              updated_at = $3
-         WHERE id = $4",
+         WHERE course_id = $4 AND id = $5",
     )
     .bind(SessionStatus::Expired)
     .bind(hard_deadline)
     .bind(updated_at)
+    .bind(course_id)
     .bind(id)
     .execute(pool)
     .await?;

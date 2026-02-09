@@ -14,6 +14,7 @@ use tower_http::{
 use tracing::Span;
 
 use crate::api::auth;
+use crate::api::courses;
 use crate::api::exams;
 use crate::api::handlers;
 use crate::api::submissions;
@@ -21,13 +22,21 @@ use crate::api::users;
 use crate::core::{config::Settings, state::AppState};
 
 pub(crate) fn router(state: AppState) -> Router {
+    let course_context_mode = state.settings().course().context_mode.as_str();
+    if course_context_mode != "route" {
+        panic!(
+            "Unsupported COURSE_CONTEXT_MODE='{course_context_mode}'. Only 'route' is supported in this release."
+        );
+    }
+
     let cors = build_cors_layer(state.settings());
     let api_v1_prefix = state.settings().api().api_v1_str.clone();
     let api_v1 = Router::new()
         .nest("/auth", auth::router())
         .nest("/users", users::router())
-        .nest("/exams", exams::router())
-        .nest("/submissions", submissions::router());
+        .nest("/courses", courses::router())
+        .nest("/courses/:course_id/exams", exams::router())
+        .nest("/courses/:course_id/submissions", submissions::router());
 
     let request_id_header = HeaderName::from_static("x-request-id");
     let request_id_header_for_span = request_id_header.clone();
@@ -134,6 +143,7 @@ mod tests {
     async fn root_returns_message() {
         let _guard = test_support::env_lock().await;
         std::env::set_var("SECRET_KEY", "test-secret");
+        std::env::set_var("COURSE_CONTEXT_MODE", "route");
         std::env::remove_var("PROMETHEUS_ENABLED");
 
         let settings = Settings::load().expect("settings");
@@ -154,6 +164,7 @@ mod tests {
     async fn metrics_disabled_returns_404() {
         let _guard = test_support::env_lock().await;
         std::env::set_var("SECRET_KEY", "test-secret");
+        std::env::set_var("COURSE_CONTEXT_MODE", "route");
         std::env::remove_var("PROMETHEUS_ENABLED");
 
         let settings = Settings::load().expect("settings");
@@ -171,6 +182,7 @@ mod tests {
     async fn metrics_enabled_returns_200() {
         let _guard = test_support::env_lock().await;
         std::env::set_var("SECRET_KEY", "test-secret");
+        std::env::set_var("COURSE_CONTEXT_MODE", "route");
         std::env::set_var("PROMETHEUS_ENABLED", "1");
 
         let settings = Settings::load().expect("settings");

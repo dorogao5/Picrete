@@ -1,4 +1,5 @@
 pub(crate) mod auth;
+pub(crate) mod courses;
 pub(crate) mod errors;
 pub(crate) mod exams;
 pub(crate) mod guards;

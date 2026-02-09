@@ -45,9 +45,16 @@ async fn grading_worker(
         }
 
         match grading::claim_next_submission(state.db()).await {
-            Ok(Some(submission_id)) => {
-                if let Err(err) = grading::grade_submission(&state, &ai, &submission_id).await {
-                    tracing::error!(submission_id, error = %err, "Failed to grade submission");
+            Ok(Some((submission_id, course_id))) => {
+                if let Err(err) =
+                    grading::grade_submission(&state, &ai, &course_id, &submission_id).await
+                {
+                    tracing::error!(
+                        course_id,
+                        submission_id,
+                        error = %err,
+                        "Failed to grade submission"
+                    );
                 }
                 continue;
             }

@@ -6,14 +6,17 @@ use axum::{
     Router,
 };
 use sqlx::PgPool;
-use time::{OffsetDateTime, PrimitiveDateTime};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use uuid::Uuid;
 
 use crate::api;
-use crate::core::{config::Settings, redis::RedisHandle, security, state::AppState};
-use crate::db::models::User;
-use crate::db::types::UserRole;
+use crate::core::{
+    config::Settings, redis::RedisHandle, security, state::AppState, time::primitive_now_utc,
+};
+use crate::db::models::{Course, User};
+use crate::db::types::CourseRole;
+use crate::repositories;
+use crate::services::invite_codes;
 use crate::services::storage::StorageService;
 
 const TEST_DATABASE_URL: &str =
@@ -39,6 +42,7 @@ pub(crate) fn set_test_env() {
 
     std::env::set_var("PICRETE_ENV", "test");
     std::env::set_var("PICRETE_STRICT_CONFIG", "0");
+    std::env::set_var("COURSE_CONTEXT_MODE", "route");
     std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
     std::env::set_var("DATABASE_URL", TEST_DATABASE_URL);
     std::env::set_var("REDIS_HOST", "127.0.0.1");
@@ -138,7 +142,8 @@ pub(crate) async fn ensure_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
 pub(crate) async fn reset_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "TRUNCATE submission_scores, submission_images, submissions, exam_sessions, \
-         task_variants, task_types, exams, users RESTART IDENTITY CASCADE",
+         task_variants, task_types, exams, course_membership_roles, course_invite_codes, \
+         course_memberships, course_identity_policies, courses, users RESTART IDENTITY CASCADE",
     )
     .execute(pool)
     .await?;
@@ -154,37 +159,157 @@ pub(crate) async fn reset_redis(url: String) -> redis::RedisResult<()> {
 
 pub(crate) async fn insert_user(
     pool: &PgPool,
-    isu: &str,
+    username: &str,
     full_name: &str,
-    role: UserRole,
     password: &str,
 ) -> User {
-    let hashed_password = security::hash_password(password).expect("hash password");
-    let now_offset = OffsetDateTime::now_utc();
-    let now = PrimitiveDateTime::new(now_offset.date(), now_offset.time());
+    insert_user_with_admin(pool, username, full_name, password, false).await
+}
 
-    sqlx::query_as::<_, User>(
-        "INSERT INTO users (
-            id, isu, hashed_password, full_name, role, is_active, is_verified,
-            pd_consent, created_at, updated_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-         RETURNING id, isu, hashed_password, full_name, role, is_active, is_verified,
-            pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at,
-            terms_version, privacy_version, created_at, updated_at",
+pub(crate) async fn insert_platform_admin(
+    pool: &PgPool,
+    username: &str,
+    full_name: &str,
+    password: &str,
+) -> User {
+    insert_user_with_admin(pool, username, full_name, password, true).await
+}
+
+pub(crate) async fn insert_user_with_admin(
+    pool: &PgPool,
+    username: &str,
+    full_name: &str,
+    password: &str,
+    is_platform_admin: bool,
+) -> User {
+    let hashed_password = security::hash_password(password).expect("hash password");
+    let now = primitive_now_utc();
+
+    repositories::users::create(
+        pool,
+        repositories::users::CreateUser {
+            id: &Uuid::new_v4().to_string(),
+            username,
+            hashed_password,
+            full_name,
+            is_platform_admin,
+            is_active: true,
+            is_verified: true,
+            pd_consent: false,
+            pd_consent_at: None,
+            pd_consent_version: None,
+            terms_accepted_at: None,
+            terms_version: None,
+            privacy_version: None,
+            created_at: now,
+            updated_at: now,
+        },
     )
-    .bind(Uuid::new_v4().to_string())
-    .bind(isu)
-    .bind(hashed_password)
-    .bind(full_name)
-    .bind(role)
-    .bind(true)
-    .bind(true)
-    .bind(false)
-    .bind(now)
-    .bind(now)
-    .fetch_one(pool)
     .await
     .expect("insert user")
+}
+
+pub(crate) async fn insert_course(
+    pool: &PgPool,
+    slug: &str,
+    title: &str,
+    created_by: &str,
+) -> Course {
+    let now = primitive_now_utc();
+    let course = repositories::courses::create(
+        pool,
+        repositories::courses::CreateCourse {
+            id: &Uuid::new_v4().to_string(),
+            slug,
+            title,
+            organization: None,
+            is_active: true,
+            created_by,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("insert course");
+
+    repositories::courses::ensure_default_identity_policy(pool, &course.id, now)
+        .await
+        .expect("ensure identity policy");
+
+    course
+}
+
+pub(crate) async fn create_course_with_teacher(
+    pool: &PgPool,
+    slug: &str,
+    title: &str,
+    teacher_id: &str,
+) -> Course {
+    let course = insert_course(pool, slug, title, teacher_id).await;
+    add_course_role(pool, &course.id, teacher_id, CourseRole::Teacher).await;
+    course
+}
+
+pub(crate) async fn add_course_role(
+    pool: &PgPool,
+    course_id: &str,
+    user_id: &str,
+    role: CourseRole,
+) -> String {
+    repositories::course_memberships::ensure_membership_with_role(
+        pool,
+        repositories::course_memberships::EnsureMembershipParams {
+            course_id,
+            user_id,
+            invited_by: None,
+            identity_payload: serde_json::json!({}),
+            role,
+            joined_at: primitive_now_utc(),
+        },
+    )
+    .await
+    .expect("add course role")
+}
+
+pub(crate) async fn create_active_invite_code(
+    pool: &PgPool,
+    course: &Course,
+    role: CourseRole,
+) -> String {
+    let now = primitive_now_utc();
+
+    if let Some(existing) =
+        repositories::course_invites::find_active_for_course_role(pool, &course.id, role)
+            .await
+            .expect("find active invite")
+    {
+        repositories::course_invites::deactivate(pool, &existing.id, now)
+            .await
+            .expect("deactivate previous invite");
+    }
+
+    let code = invite_codes::generate_invite_code(&course.slug, role);
+    let code_hash = invite_codes::hash_invite_code(&code);
+
+    repositories::course_invites::create(
+        pool,
+        repositories::course_invites::CreateInviteCode {
+            id: &Uuid::new_v4().to_string(),
+            course_id: &course.id,
+            role,
+            code_hash: &code_hash,
+            is_active: true,
+            rotated_from_id: None,
+            expires_at: None,
+            usage_count: 0,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("create invite code");
+
+    code
 }
 
 pub(crate) fn bearer_token(user_id: &str, settings: &Settings) -> String {

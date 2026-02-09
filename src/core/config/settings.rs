@@ -1,12 +1,13 @@
 use super::parsing::{
     env_optional, env_or_default, is_supported_image_extension, parse_bool, parse_cors_origins,
-    parse_environment, parse_string_list, parse_u16, parse_u32, parse_u64,
+    parse_course_context_mode, parse_environment, parse_string_list, parse_u16, parse_u32,
+    parse_u64,
 };
 use super::secret::load_or_create_secret_key;
 use super::types::{
-    AdminSettings, AiSettings, ApiSettings, ConfigError, CorsSettings, DatabaseSettings,
-    ExamSettings, RedisSettings, RuntimeSettings, S3Settings, SecuritySettings, ServerHost,
-    ServerPort, ServerSettings, Settings, StorageSettings, TelemetrySettings,
+    AdminSettings, AiSettings, ApiSettings, ConfigError, CorsSettings, CourseSettings,
+    DatabaseSettings, ExamSettings, RedisSettings, RuntimeSettings, S3Settings, SecuritySettings,
+    ServerHost, ServerPort, ServerSettings, Settings, StorageSettings, TelemetrySettings,
 };
 
 impl Settings {
@@ -85,8 +86,10 @@ impl Settings {
             env_or_default("PRESIGNED_URL_EXPIRE_MINUTES", "5"),
         )?;
 
-        let first_superuser_isu = env_or_default("FIRST_SUPERUSER_ISU", "000000");
+        let first_superuser_username = env_or_default("FIRST_SUPERUSER_USERNAME", "admin");
         let first_superuser_password = env_or_default("FIRST_SUPERUSER_PASSWORD", "");
+
+        let course_context_mode = parse_course_context_mode(env_optional("COURSE_CONTEXT_MODE"));
 
         let log_level = env_or_default("PICRETE_LOG_LEVEL", "info");
         let json = env_optional("PICRETE_LOG_JSON")
@@ -150,7 +153,8 @@ impl Settings {
                 auto_save_interval_seconds,
                 presigned_url_expire_minutes,
             },
-            admin: AdminSettings { first_superuser_isu, first_superuser_password },
+            admin: AdminSettings { first_superuser_username, first_superuser_password },
+            course: CourseSettings { context_mode: course_context_mode },
             telemetry: TelemetrySettings { log_level, json, prometheus_enabled },
         };
 
@@ -208,6 +212,10 @@ impl Settings {
 
     pub(crate) fn admin(&self) -> &AdminSettings {
         &self.admin
+    }
+
+    pub(crate) fn course(&self) -> &CourseSettings {
+        &self.course
     }
 
     pub(crate) fn telemetry(&self) -> &TelemetrySettings {

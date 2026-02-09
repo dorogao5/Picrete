@@ -7,7 +7,7 @@ pub(crate) use commands::{
     queue_regrade, queue_uploaded_for_processing_by_exam, requeue_failed, update_status_by_session,
 };
 pub(crate) use queries::{
-    fetch_one_by_id, find_by_id, find_by_session, find_exam_creator_by_submission,
-    find_id_by_session, find_teacher_details, list_by_sessions, list_flagged_for_retry,
+    fetch_one_by_id, find_by_id, find_by_session, find_id_by_session, find_teacher_details,
+    list_by_sessions, list_flagged_for_retry,
 };
 pub(crate) use types::PreliminaryUpdate;

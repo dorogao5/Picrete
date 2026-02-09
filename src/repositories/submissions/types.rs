@@ -5,7 +5,7 @@ use crate::db::types::SubmissionStatus;
 use std::collections::HashMap;
 
 pub(crate) const COLUMNS: &str = "\
-    id, session_id, student_id, submitted_at, status, ai_score, final_score, max_score, \
+    id, course_id, session_id, student_id, submitted_at, status, ai_score, final_score, max_score, \
     ai_analysis, ai_comments, ai_processed_at, ai_request_started_at, ai_request_completed_at, \
     ai_request_duration_seconds, ai_error, ai_retry_count, teacher_comments, reviewed_by, \
     reviewed_at, is_flagged, flag_reasons, anomaly_scores, files_hash, created_at, updated_at";
@@ -13,6 +13,7 @@ pub(crate) const COLUMNS: &str = "\
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct TeacherSubmissionDetails {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) session_id: String,
     pub(crate) student_id: String,
     pub(crate) submitted_at: PrimitiveDateTime,
@@ -29,10 +30,9 @@ pub(crate) struct TeacherSubmissionDetails {
     pub(crate) reviewed_at: Option<PrimitiveDateTime>,
     pub(crate) exam_id: String,
     pub(crate) exam_title: String,
-    pub(crate) exam_created_by: Option<String>,
     pub(crate) variant_assignments: Json<HashMap<String, String>>,
     pub(crate) student_name: String,
-    pub(crate) student_isu: String,
+    pub(crate) student_username: String,
 }
 
 pub(crate) struct PreliminaryUpdate {

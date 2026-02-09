@@ -6,19 +6,22 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::api::errors::ApiError;
-use crate::api::guards::CurrentUser;
+use crate::api::guards::{require_course_role, CurrentUser};
 use crate::api::validation::validate_image_upload;
 use crate::core::state::AppState;
-use crate::db::types::SessionStatus;
+use crate::db::types::{CourseRole, SessionStatus};
 use crate::repositories;
 
 pub(in crate::api::submissions) async fn presigned_upload_url(
-    Path(session_id): Path<String>,
+    Path((course_id, session_id)): Path<(String, String)>,
     Query(query): Query<crate::api::submissions::PresignQuery>,
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let session = crate::api::submissions::helpers::fetch_session(state.db(), &session_id).await?;
+    require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
+    let session =
+        crate::api::submissions::helpers::fetch_session(state.db(), &course_id, &session_id)
+            .await?;
     if session.student_id != user.id {
         return Err(ApiError::Forbidden("Access denied"));
     }
@@ -47,7 +50,7 @@ pub(in crate::api::submissions) async fn presigned_upload_url(
 
     let filename = crate::api::submissions::helpers::sanitized_filename(&query.filename);
     let object_id = Uuid::new_v4().to_string();
-    let key = format!("submissions/{session_id}/{object_id}_{filename}");
+    let key = format!("submissions/{course_id}/{session_id}/{object_id}_{filename}");
     let expires =
         std::time::Duration::from_secs(state.settings().exam().presigned_url_expire_minutes * 60);
     let presigned = storage
@@ -64,12 +67,15 @@ pub(in crate::api::submissions) async fn presigned_upload_url(
 }
 
 pub(in crate::api::submissions) async fn upload_image(
-    Path(session_id): Path<String>,
+    Path((course_id, session_id)): Path<(String, String)>,
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let session = crate::api::submissions::helpers::fetch_session(state.db(), &session_id).await?;
+    require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
+    let session =
+        crate::api::submissions::helpers::fetch_session(state.db(), &course_id, &session_id)
+            .await?;
     if session.student_id != user.id {
         return Err(ApiError::Forbidden("Access denied"));
     }
@@ -91,9 +97,10 @@ pub(in crate::api::submissions) async fn upload_image(
     let submission_id =
         crate::api::submissions::helpers::ensure_submission(state.db(), &session).await?;
 
-    let current_images = repositories::images::count_by_submission(state.db(), &submission_id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to count submission images"))?;
+    let current_images =
+        repositories::images::count_by_submission(state.db(), &course_id, &submission_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to count submission images"))?;
 
     let max_images = state.settings().storage().max_images_per_submission as i64;
     if current_images >= max_images {
@@ -166,7 +173,8 @@ pub(in crate::api::submissions) async fn upload_image(
 
     let image_id = Uuid::new_v4().to_string();
     let key = format!(
-        "submissions/{}/{}_{}",
+        "submissions/{}/{}/{}_{}",
+        course_id,
         session_id,
         image_id,
         crate::api::submissions::helpers::sanitized_filename(&filename)
@@ -180,6 +188,7 @@ pub(in crate::api::submissions) async fn upload_image(
     repositories::images::insert(
         state.db(),
         &image_id,
+        &course_id,
         &submission_id,
         &filename,
         &key,

@@ -2,10 +2,10 @@ use axum::{extract::Query, Json};
 use validator::Validate;
 
 use crate::api::errors::ApiError;
-use crate::api::guards::{CurrentTeacher, CurrentUser};
+use crate::api::guards::{require_course_membership, require_course_role, CurrentUser};
 use crate::core::state::AppState;
 use crate::core::time::{primitive_now_utc, to_primitive_utc};
-use crate::db::types::{ExamStatus, UserRole};
+use crate::db::types::{CourseRole, ExamStatus};
 use crate::repositories;
 use crate::schemas::exam::{ExamResponse, ExamUpdate};
 
@@ -13,11 +13,13 @@ use super::super::helpers;
 use super::super::queries::DeleteExamQuery;
 
 pub(in crate::api::exams) async fn get_exam(
-    axum::extract::Path(exam_id): axum::extract::Path<String>,
+    axum::extract::Path((course_id, exam_id)): axum::extract::Path<(String, String)>,
     CurrentUser(user): CurrentUser,
     state: axum::extract::State<AppState>,
 ) -> Result<Json<ExamResponse>, ApiError> {
-    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+    let access = require_course_membership(&state, &user, &course_id).await?;
+
+    let exam = repositories::exams::find_by_id(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
 
@@ -25,7 +27,10 @@ pub(in crate::api::exams) async fn get_exam(
         return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
-    if matches!(user.role, UserRole::Student)
+    let is_teacher = user.is_platform_admin
+        || access.roles.iter().any(|role| matches!(role, CourseRole::Teacher));
+
+    if !is_teacher
         && !matches!(
             exam.status,
             ExamStatus::Published | ExamStatus::Active | ExamStatus::Completed
@@ -34,28 +39,26 @@ pub(in crate::api::exams) async fn get_exam(
         return Err(ApiError::Forbidden("Access denied"));
     }
 
-    let task_types = helpers::fetch_task_types(state.db(), &exam.id).await?;
+    let task_types = helpers::fetch_task_types(state.db(), &course_id, &exam.id).await?;
 
     Ok(Json(helpers::exam_to_response(exam, task_types)))
 }
 
 pub(in crate::api::exams) async fn update_exam(
-    axum::extract::Path(exam_id): axum::extract::Path<String>,
-    CurrentTeacher(teacher): CurrentTeacher,
+    axum::extract::Path((course_id, exam_id)): axum::extract::Path<(String, String)>,
+    CurrentUser(user): CurrentUser,
     state: axum::extract::State<AppState>,
     Json(payload): Json<ExamUpdate>,
 ) -> Result<Json<ExamResponse>, ApiError> {
-    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+    require_course_role(&state, &user, &course_id, CourseRole::Teacher).await?;
+
+    let exam = repositories::exams::find_by_id(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
 
     let Some(exam) = exam else {
         return Err(ApiError::NotFound("Exam not found".to_string()));
     };
-
-    if !helpers::can_manage_exam(&teacher, &exam) {
-        return Err(ApiError::Forbidden("You can only update your own exams"));
-    }
 
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
@@ -71,6 +74,7 @@ pub(in crate::api::exams) async fn update_exam(
 
     repositories::exams::update(
         state.db(),
+        &course_id,
         &exam_id,
         repositories::exams::UpdateExam {
             title: payload.title,
@@ -85,34 +89,32 @@ pub(in crate::api::exams) async fn update_exam(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to update exam"))?;
 
-    let updated = repositories::exams::fetch_one_by_id(state.db(), &exam_id)
+    let updated = repositories::exams::fetch_one_by_id(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch updated exam"))?;
 
-    let task_types = helpers::fetch_task_types(state.db(), &updated.id).await?;
+    let task_types = helpers::fetch_task_types(state.db(), &course_id, &updated.id).await?;
 
     Ok(Json(helpers::exam_to_response(updated, task_types)))
 }
 
 pub(in crate::api::exams) async fn delete_exam(
-    axum::extract::Path(exam_id): axum::extract::Path<String>,
+    axum::extract::Path((course_id, exam_id)): axum::extract::Path<(String, String)>,
     Query(params): Query<DeleteExamQuery>,
-    CurrentTeacher(teacher): CurrentTeacher,
+    CurrentUser(user): CurrentUser,
     state: axum::extract::State<AppState>,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+    require_course_role(&state, &user, &course_id, CourseRole::Teacher).await?;
+
+    let exam = repositories::exams::find_by_id(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
 
-    let Some(exam) = exam else {
+    let Some(_exam) = exam else {
         return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
-    if !helpers::can_manage_exam(&teacher, &exam) {
-        return Err(ApiError::Forbidden("You can only delete your own exams"));
-    }
-
-    let submissions_count = repositories::exams::count_sessions(state.db(), &exam_id)
+    let submissions_count = repositories::exams::count_sessions(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to count sessions"))?;
 
@@ -122,7 +124,7 @@ pub(in crate::api::exams) async fn delete_exam(
         )));
     }
 
-    repositories::exams::delete_by_id(state.db(), &exam_id)
+    repositories::exams::delete_by_id(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to delete exam"))?;
 
@@ -130,11 +132,13 @@ pub(in crate::api::exams) async fn delete_exam(
 }
 
 pub(in crate::api::exams) async fn publish_exam(
-    axum::extract::Path(exam_id): axum::extract::Path<String>,
-    CurrentTeacher(teacher): CurrentTeacher,
+    axum::extract::Path((course_id, exam_id)): axum::extract::Path<(String, String)>,
+    CurrentUser(user): CurrentUser,
     state: axum::extract::State<AppState>,
 ) -> Result<Json<ExamResponse>, ApiError> {
-    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+    require_course_role(&state, &user, &course_id, CourseRole::Teacher).await?;
+
+    let exam = repositories::exams::find_by_id(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
 
@@ -142,15 +146,11 @@ pub(in crate::api::exams) async fn publish_exam(
         return Err(ApiError::NotFound("Exam not found".to_string()));
     };
 
-    if !helpers::can_manage_exam(&teacher, &exam) {
-        return Err(ApiError::Forbidden("You can only publish your own exams"));
-    }
-
     if exam.status != ExamStatus::Draft {
         return Err(ApiError::BadRequest("Exam is not in draft status".to_string()));
     }
 
-    let task_count = repositories::exams::count_task_types(state.db(), &exam_id)
+    let task_count = repositories::exams::count_task_types(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to count task types"))?;
 
@@ -159,18 +159,19 @@ pub(in crate::api::exams) async fn publish_exam(
     }
 
     let now = primitive_now_utc();
-    repositories::exams::publish(state.db(), &exam_id, now)
+    repositories::exams::publish(state.db(), &course_id, &exam_id, now)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to publish exam"))?;
 
-    let updated = repositories::exams::fetch_one_by_id(state.db(), &exam_id)
+    let updated = repositories::exams::fetch_one_by_id(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch updated exam"))?;
 
-    let task_types = helpers::fetch_task_types(state.db(), &updated.id).await?;
+    let task_types = helpers::fetch_task_types(state.db(), &course_id, &updated.id).await?;
 
     tracing::info!(
-        teacher_id = %teacher.id,
+        user_id = %user.id,
+        course_id = %course_id,
         exam_id = %updated.id,
         action = "exam_publish",
         "Exam published"

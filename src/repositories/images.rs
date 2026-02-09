@@ -3,17 +3,21 @@ use sqlx::PgPool;
 use crate::db::models::SubmissionImage;
 
 pub(crate) const COLUMNS: &str = "\
-    id, submission_id, filename, file_path, file_size, mime_type, \
+    id, course_id, submission_id, filename, file_path, file_size, mime_type, \
     is_processed, ocr_text, quality_score, order_index, perceptual_hash, \
     uploaded_at, processed_at";
 
 pub(crate) async fn find_by_id(
     pool: &PgPool,
+    course_id: &str,
     id: &str,
 ) -> Result<Option<SubmissionImage>, sqlx::Error> {
     sqlx::query_as::<_, SubmissionImage>(&format!(
-        "SELECT {COLUMNS} FROM submission_images WHERE id = $1"
+        "SELECT {COLUMNS}
+         FROM submission_images
+         WHERE course_id = $1 AND id = $2"
     ))
+    .bind(course_id)
     .bind(id)
     .fetch_optional(pool)
     .await
@@ -21,11 +25,16 @@ pub(crate) async fn find_by_id(
 
 pub(crate) async fn list_by_submission(
     pool: &PgPool,
+    course_id: &str,
     submission_id: &str,
 ) -> Result<Vec<SubmissionImage>, sqlx::Error> {
     sqlx::query_as::<_, SubmissionImage>(&format!(
-        "SELECT {COLUMNS} FROM submission_images WHERE submission_id = $1 ORDER BY order_index"
+        "SELECT {COLUMNS}
+         FROM submission_images
+         WHERE course_id = $1 AND submission_id = $2
+         ORDER BY order_index"
     ))
+    .bind(course_id)
     .bind(submission_id)
     .fetch_all(pool)
     .await
@@ -33,6 +42,7 @@ pub(crate) async fn list_by_submission(
 
 pub(crate) async fn list_by_submissions(
     pool: &PgPool,
+    course_id: &str,
     submission_ids: &[String],
 ) -> Result<Vec<SubmissionImage>, sqlx::Error> {
     if submission_ids.is_empty() {
@@ -40,8 +50,12 @@ pub(crate) async fn list_by_submissions(
     }
 
     sqlx::query_as::<_, SubmissionImage>(&format!(
-        "SELECT {COLUMNS} FROM submission_images WHERE submission_id = ANY($1) ORDER BY order_index"
+        "SELECT {COLUMNS}
+         FROM submission_images
+         WHERE course_id = $1 AND submission_id = ANY($2)
+         ORDER BY order_index"
     ))
+    .bind(course_id)
     .bind(submission_ids)
     .fetch_all(pool)
     .await
@@ -49,18 +63,25 @@ pub(crate) async fn list_by_submissions(
 
 pub(crate) async fn count_by_submission(
     pool: &PgPool,
+    course_id: &str,
     submission_id: &str,
 ) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT COUNT(*) FROM submission_images WHERE submission_id = $1")
-        .bind(submission_id)
-        .fetch_one(pool)
-        .await
+    sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM submission_images
+         WHERE course_id = $1 AND submission_id = $2",
+    )
+    .bind(course_id)
+    .bind(submission_id)
+    .fetch_one(pool)
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn insert(
     pool: &PgPool,
     id: &str,
+    course_id: &str,
     submission_id: &str,
     filename: &str,
     file_path: &str,
@@ -71,11 +92,12 @@ pub(crate) async fn insert(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO submission_images (
-            id, submission_id, filename, file_path, file_size, mime_type,
+            id, course_id, submission_id, filename, file_path, file_size, mime_type,
             order_index, is_processed, uploaded_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
     )
     .bind(id)
+    .bind(course_id)
     .bind(submission_id)
     .bind(filename)
     .bind(file_path)

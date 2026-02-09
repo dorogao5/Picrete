@@ -5,11 +5,10 @@ use uuid::Uuid;
 use crate::api::errors::ApiError;
 use crate::api::guards::{CurrentAdmin, CurrentUser};
 use crate::api::pagination::{default_limit, PaginatedResponse};
-use crate::api::validation::{validate_isu, validate_password_len};
+use crate::api::validation::{validate_password_len, validate_username};
 use crate::core::security;
 use crate::core::state::AppState;
 use crate::core::time::primitive_now_utc;
-use crate::db::types::UserRole;
 use crate::repositories;
 use crate::schemas::user::{AdminUserCreate, AdminUserUpdate, UserResponse};
 
@@ -20,9 +19,10 @@ pub(crate) struct UserListQuery {
     #[serde(default = "default_limit")]
     limit: i64,
     #[serde(default)]
-    isu: Option<String>,
+    username: Option<String>,
     #[serde(default)]
-    role: Option<UserRole>,
+    #[serde(alias = "isPlatformAdmin")]
+    is_platform_admin: Option<bool>,
     #[serde(default)]
     #[serde(alias = "isActive")]
     is_active: Option<bool>,
@@ -50,8 +50,8 @@ async fn list_users(
     let skip = params.skip.max(0);
     let limit = params.limit.clamp(1, 1000);
     let filters = repositories::users::UserListFilters {
-        isu: params.isu.as_deref(),
-        role: params.role,
+        username: params.username.as_deref(),
+        is_platform_admin: params.is_platform_admin,
         is_active: params.is_active,
         is_verified: params.is_verified,
     };
@@ -92,15 +92,15 @@ async fn create_user(
     state: axum::extract::State<AppState>,
     Json(payload): Json<AdminUserCreate>,
 ) -> Result<(axum::http::StatusCode, Json<UserResponse>), ApiError> {
-    validate_isu(&payload.isu)?;
+    validate_username(&payload.username)?;
     validate_password_len(&payload.password)?;
 
-    let existing = repositories::users::exists_by_isu(state.db(), &payload.isu)
+    let existing = repositories::users::exists_by_username(state.db(), &payload.username)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to check existing user"))?;
 
     if existing.is_some() {
-        return Err(ApiError::Conflict("User with this ISU already exists".to_string()));
+        return Err(ApiError::Conflict("User with this username already exists".to_string()));
     }
 
     let hashed_password = security::hash_password(&payload.password)
@@ -112,10 +112,10 @@ async fn create_user(
         state.db(),
         repositories::users::CreateUser {
             id: &Uuid::new_v4().to_string(),
-            isu: &payload.isu,
+            username: &payload.username,
             hashed_password,
             full_name: &payload.full_name,
-            role: payload.role,
+            is_platform_admin: payload.is_platform_admin,
             is_active: payload.is_active,
             is_verified: payload.is_verified,
             pd_consent: false,
@@ -172,7 +172,7 @@ async fn update_user(
         &user_id,
         repositories::users::UpdateUser {
             full_name: payload.full_name,
-            role: payload.role,
+            is_platform_admin: payload.is_platform_admin,
             is_active: payload.is_active,
             is_verified: payload.is_verified,
             hashed_password,

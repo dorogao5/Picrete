@@ -6,7 +6,7 @@ use crate::db::models::Exam;
 use crate::db::types::{ExamStatus, SubmissionStatus};
 
 pub(crate) const COLUMNS: &str = "\
-    id, title, description, start_time, end_time, duration_minutes, timezone, \
+    id, course_id, title, description, start_time, end_time, duration_minutes, timezone, \
     max_attempts, allow_breaks, break_duration_minutes, auto_save_interval, \
     status, created_by, created_at, updated_at, published_at, settings";
 
@@ -14,7 +14,7 @@ pub(crate) const COLUMNS: &str = "\
 pub(crate) struct ExamSubmissionRow {
     pub(crate) id: String,
     pub(crate) student_id: String,
-    pub(crate) student_isu: String,
+    pub(crate) student_username: String,
     pub(crate) student_name: String,
     pub(crate) submitted_at: PrimitiveDateTime,
     pub(crate) status: SubmissionStatus,
@@ -26,6 +26,7 @@ pub(crate) struct ExamSubmissionRow {
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct ExamSummaryRow {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) title: String,
     pub(crate) start_time: PrimitiveDateTime,
     pub(crate) end_time: PrimitiveDateTime,
@@ -39,6 +40,7 @@ pub(crate) struct ExamSummaryRow {
 
 pub(crate) struct CreateExam<'a> {
     pub(crate) id: &'a str,
+    pub(crate) course_id: &'a str,
     pub(crate) title: &'a str,
     pub(crate) description: Option<&'a str>,
     pub(crate) start_time: PrimitiveDateTime,
@@ -67,6 +69,7 @@ pub(crate) struct UpdateExam {
 }
 
 pub(crate) struct ListExamSummariesParams {
+    pub(crate) course_id: String,
     pub(crate) student_visible_only: bool,
     pub(crate) status: Option<ExamStatus>,
     pub(crate) skip: i64,
@@ -79,13 +82,14 @@ pub(crate) async fn create(
 ) -> Result<Exam, sqlx::Error> {
     sqlx::query_as::<_, Exam>(&format!(
         "INSERT INTO exams (
-            id, title, description, start_time, end_time, duration_minutes, timezone,
+            id, course_id, title, description, start_time, end_time, duration_minutes, timezone,
             max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
             status, created_by, created_at, updated_at, settings
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
         RETURNING {COLUMNS}",
     ))
     .bind(params.id)
+    .bind(params.course_id)
     .bind(params.title)
     .bind(params.description)
     .bind(params.start_time)
@@ -105,18 +109,36 @@ pub(crate) async fn create(
     .await
 }
 
-pub(crate) async fn find_by_id(pool: &PgPool, id: &str) -> Result<Option<Exam>, sqlx::Error> {
-    sqlx::query_as::<_, Exam>(&format!("SELECT {COLUMNS} FROM exams WHERE id = $1"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await
+pub(crate) async fn find_by_id(
+    pool: &PgPool,
+    course_id: &str,
+    id: &str,
+) -> Result<Option<Exam>, sqlx::Error> {
+    sqlx::query_as::<_, Exam>(&format!(
+        "SELECT {COLUMNS}
+         FROM exams
+         WHERE course_id = $1 AND id = $2"
+    ))
+    .bind(course_id)
+    .bind(id)
+    .fetch_optional(pool)
+    .await
 }
 
-pub(crate) async fn fetch_one_by_id(pool: &PgPool, id: &str) -> Result<Exam, sqlx::Error> {
-    sqlx::query_as::<_, Exam>(&format!("SELECT {COLUMNS} FROM exams WHERE id = $1"))
-        .bind(id)
-        .fetch_one(pool)
-        .await
+pub(crate) async fn fetch_one_by_id(
+    pool: &PgPool,
+    course_id: &str,
+    id: &str,
+) -> Result<Exam, sqlx::Error> {
+    sqlx::query_as::<_, Exam>(&format!(
+        "SELECT {COLUMNS}
+         FROM exams
+         WHERE course_id = $1 AND id = $2"
+    ))
+    .bind(course_id)
+    .bind(id)
+    .fetch_one(pool)
+    .await
 }
 
 pub(crate) async fn list_summaries(
@@ -124,27 +146,38 @@ pub(crate) async fn list_summaries(
     params: ListExamSummariesParams,
 ) -> Result<Vec<ExamSummaryRow>, sqlx::Error> {
     let mut builder = QueryBuilder::<Postgres>::new(
-        "SELECT e.id, e.title, e.start_time, e.end_time, e.duration_minutes, e.status,
+        "SELECT e.id, e.course_id, e.title, e.start_time, e.end_time, e.duration_minutes, e.status,
                 COALESCE(tc.cnt, 0) AS task_count,
                 COALESCE(sc.cnt, 0) AS student_count,
                 COALESCE(pc.cnt, 0) AS pending_count,
                 COUNT(*) OVER() AS total_count
          FROM exams e
-         LEFT JOIN (SELECT exam_id, COUNT(*) AS cnt FROM task_types GROUP BY exam_id) tc
-             ON tc.exam_id = e.id
-         LEFT JOIN (SELECT exam_id, COUNT(DISTINCT student_id) AS cnt FROM exam_sessions GROUP BY exam_id) sc
-             ON sc.exam_id = e.id
          LEFT JOIN (
-             SELECT es.exam_id, COUNT(*) AS cnt
+             SELECT course_id, exam_id, COUNT(*) AS cnt
+             FROM task_types
+             GROUP BY course_id, exam_id
+         ) tc ON tc.course_id = e.course_id AND tc.exam_id = e.id
+         LEFT JOIN (
+             SELECT course_id, exam_id, COUNT(DISTINCT student_id) AS cnt
+             FROM exam_sessions
+             GROUP BY course_id, exam_id
+         ) sc ON sc.course_id = e.course_id AND sc.exam_id = e.id
+         LEFT JOIN (
+             SELECT es.course_id, es.exam_id, COUNT(*) AS cnt
              FROM submissions s
-             JOIN exam_sessions es ON s.session_id = es.id
+             JOIN exam_sessions es ON s.course_id = es.course_id AND s.session_id = es.id
              WHERE s.status = ",
     );
     builder.push_bind(SubmissionStatus::Preliminary);
-    builder.push(" GROUP BY es.exam_id) pc ON pc.exam_id = e.id");
+    builder.push(
+        " GROUP BY es.course_id, es.exam_id
+         ) pc ON pc.course_id = e.course_id AND pc.exam_id = e.id
+         WHERE e.course_id = ",
+    );
+    builder.push_bind(params.course_id);
 
     if params.student_visible_only {
-        builder.push(" WHERE e.status IN (");
+        builder.push(" AND e.status IN (");
         builder.push_bind(ExamStatus::Published);
         builder.push(", ");
         builder.push_bind(ExamStatus::Active);
@@ -154,12 +187,7 @@ pub(crate) async fn list_summaries(
     }
 
     if let Some(status) = params.status {
-        if params.student_visible_only {
-            builder.push(" AND ");
-        } else {
-            builder.push(" WHERE ");
-        }
-        builder.push("e.status = ");
+        builder.push(" AND e.status = ");
         builder.push_bind(status);
     }
 
@@ -172,7 +200,12 @@ pub(crate) async fn list_summaries(
     builder.build_query_as::<ExamSummaryRow>().fetch_all(pool).await
 }
 
-pub(crate) async fn update(pool: &PgPool, id: &str, params: UpdateExam) -> Result<(), sqlx::Error> {
+pub(crate) async fn update(
+    pool: &PgPool,
+    course_id: &str,
+    id: &str,
+    params: UpdateExam,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE exams SET
             title = COALESCE($1, title),
@@ -182,7 +215,7 @@ pub(crate) async fn update(pool: &PgPool, id: &str, params: UpdateExam) -> Resul
             duration_minutes = COALESCE($5, duration_minutes),
             settings = COALESCE($6::jsonb, settings),
             updated_at = $7
-         WHERE id = $8",
+         WHERE course_id = $8 AND id = $9",
     )
     .bind(params.title)
     .bind(params.description)
@@ -191,6 +224,7 @@ pub(crate) async fn update(pool: &PgPool, id: &str, params: UpdateExam) -> Resul
     .bind(params.duration_minutes)
     .bind(params.settings)
     .bind(params.updated_at)
+    .bind(course_id)
     .bind(id)
     .execute(pool)
     .await?;
@@ -198,37 +232,69 @@ pub(crate) async fn update(pool: &PgPool, id: &str, params: UpdateExam) -> Resul
     Ok(())
 }
 
-pub(crate) async fn count_task_types(pool: &PgPool, exam_id: &str) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT COUNT(*) FROM task_types WHERE exam_id = $1")
-        .bind(exam_id)
-        .fetch_one(pool)
-        .await
+pub(crate) async fn count_task_types(
+    pool: &PgPool,
+    course_id: &str,
+    exam_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM task_types
+         WHERE course_id = $1 AND exam_id = $2",
+    )
+    .bind(course_id)
+    .bind(exam_id)
+    .fetch_one(pool)
+    .await
 }
 
-pub(crate) async fn count_sessions(pool: &PgPool, exam_id: &str) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT COUNT(*) FROM exam_sessions WHERE exam_id = $1")
-        .bind(exam_id)
-        .fetch_one(pool)
-        .await
+pub(crate) async fn count_sessions(
+    pool: &PgPool,
+    course_id: &str,
+    exam_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM exam_sessions
+         WHERE course_id = $1 AND exam_id = $2",
+    )
+    .bind(course_id)
+    .bind(exam_id)
+    .fetch_one(pool)
+    .await
 }
 
-pub(crate) async fn delete_by_id(pool: &PgPool, id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM exams WHERE id = $1").bind(id).execute(pool).await?;
+pub(crate) async fn delete_by_id(
+    pool: &PgPool,
+    course_id: &str,
+    id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM exams WHERE course_id = $1 AND id = $2")
+        .bind(course_id)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
 pub(crate) async fn publish(
     pool: &PgPool,
+    course_id: &str,
     id: &str,
     now: time::PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE exams SET status = $1, published_at = $2, updated_at = $3 WHERE id = $4")
-        .bind(ExamStatus::Published)
-        .bind(now)
-        .bind(now)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE exams
+         SET status = $1, published_at = $2, updated_at = $3
+         WHERE course_id = $4 AND id = $5",
+    )
+    .bind(ExamStatus::Published)
+    .bind(now)
+    .bind(now)
+    .bind(course_id)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -251,41 +317,63 @@ pub(crate) async fn list_ready_to_complete(
 
 pub(crate) async fn mark_completed(
     pool: &PgPool,
+    course_id: &str,
     exam_id: &str,
     now: PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE exams SET status = $1, updated_at = $2 WHERE id = $3")
-        .bind(ExamStatus::Completed)
-        .bind(now)
-        .bind(exam_id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE exams
+         SET status = $1, updated_at = $2
+         WHERE course_id = $3 AND id = $4",
+    )
+    .bind(ExamStatus::Completed)
+    .bind(now)
+    .bind(course_id)
+    .bind(exam_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 pub(crate) async fn list_titles_by_ids(
     pool: &PgPool,
+    course_id: &str,
     exam_ids: &[String],
 ) -> Result<Vec<(String, String)>, sqlx::Error> {
     if exam_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    sqlx::query_as::<_, (String, String)>("SELECT id, title FROM exams WHERE id = ANY($1)")
-        .bind(exam_ids)
-        .fetch_all(pool)
-        .await
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT id, title
+         FROM exams
+         WHERE course_id = $1 AND id = ANY($2)",
+    )
+    .bind(course_id)
+    .bind(exam_ids)
+    .fetch_all(pool)
+    .await
 }
 
-pub(crate) async fn max_score_for_exam(pool: &PgPool, exam_id: &str) -> Result<f64, sqlx::Error> {
-    sqlx::query_scalar("SELECT COALESCE(SUM(max_score), 100) FROM task_types WHERE exam_id = $1")
-        .bind(exam_id)
-        .fetch_one(pool)
-        .await
+pub(crate) async fn max_score_for_exam(
+    pool: &PgPool,
+    course_id: &str,
+    exam_id: &str,
+) -> Result<f64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(max_score), 100)
+         FROM task_types
+         WHERE course_id = $1 AND exam_id = $2",
+    )
+    .bind(course_id)
+    .bind(exam_id)
+    .fetch_one(pool)
+    .await
 }
 
 pub(crate) async fn list_submissions_by_exam(
     pool: &PgPool,
+    course_id: &str,
     exam_id: &str,
     status: Option<SubmissionStatus>,
     skip: i64,
@@ -294,7 +382,7 @@ pub(crate) async fn list_submissions_by_exam(
     let mut builder = QueryBuilder::<Postgres>::new(
         "SELECT s.id,
                 s.student_id,
-                u.isu AS student_isu,
+                u.username AS student_username,
                 u.full_name AS student_name,
                 s.submitted_at,
                 s.status,
@@ -302,10 +390,12 @@ pub(crate) async fn list_submissions_by_exam(
                 s.final_score,
                 s.max_score
          FROM submissions s
-         JOIN exam_sessions es ON s.session_id = es.id
+         JOIN exam_sessions es ON s.course_id = es.course_id AND s.session_id = es.id
          JOIN users u ON u.id = s.student_id
-         WHERE es.exam_id = ",
+         WHERE s.course_id = ",
     );
+    builder.push_bind(course_id);
+    builder.push(" AND es.exam_id = ");
     builder.push_bind(exam_id);
 
     if let Some(status) = status {
@@ -323,15 +413,18 @@ pub(crate) async fn list_submissions_by_exam(
 
 pub(crate) async fn count_submissions_by_exam(
     pool: &PgPool,
+    course_id: &str,
     exam_id: &str,
     status: Option<SubmissionStatus>,
 ) -> Result<i64, sqlx::Error> {
     let mut builder = QueryBuilder::<Postgres>::new(
         "SELECT COUNT(*)
          FROM submissions s
-         JOIN exam_sessions es ON s.session_id = es.id
-         WHERE es.exam_id = ",
+         JOIN exam_sessions es ON s.course_id = es.course_id AND s.session_id = es.id
+         WHERE s.course_id = ",
     );
+    builder.push_bind(course_id);
+    builder.push(" AND es.exam_id = ");
     builder.push_bind(exam_id);
 
     if let Some(status) = status {

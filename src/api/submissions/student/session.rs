@@ -8,18 +8,21 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::errors::ApiError;
-use crate::api::guards::CurrentUser;
+use crate::api::guards::{require_course_role, CurrentUser};
 use crate::core::state::AppState;
-use crate::db::types::{ExamStatus, SessionStatus};
+use crate::db::types::{CourseRole, ExamStatus, SessionStatus};
 use crate::repositories;
 use crate::schemas::submission::{format_primitive, ExamSessionResponse};
 
 pub(in crate::api::submissions) async fn enter_exam(
-    Path(exam_id): Path<String>,
+    Path((course_id, exam_id)): Path<(String, String)>,
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
 ) -> Result<Json<ExamSessionResponse>, ApiError> {
-    let exam = crate::api::submissions::helpers::fetch_exam(state.db(), &exam_id).await?;
+    require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
+
+    let exam =
+        crate::api::submissions::helpers::fetch_exam(state.db(), &course_id, &exam_id).await?;
 
     if !matches!(exam.status, ExamStatus::Published | ExamStatus::Active) {
         return Err(ApiError::BadRequest("Exam is not available".to_string()));
@@ -34,7 +37,7 @@ pub(in crate::api::submissions) async fn enter_exam(
         return Err(ApiError::BadRequest("Exam has ended".to_string()));
     }
 
-    let task_types = repositories::task_types::list_by_exam(state.db(), &exam_id)
+    let task_types = repositories::task_types::list_by_exam(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch task types"))?;
 
@@ -44,9 +47,10 @@ pub(in crate::api::submissions) async fn enter_exam(
     let mut assignments = serde_json::Map::new();
 
     for task_type in task_types {
-        let variants = repositories::task_types::list_variants(state.db(), &task_type.id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to fetch variants"))?;
+        let variants =
+            repositories::task_types::list_variants(state.db(), &course_id, &task_type.id)
+                .await
+                .map_err(|e| ApiError::internal(e, "Failed to fetch variants"))?;
 
         if variants.is_empty() {
             return Err(ApiError::BadRequest(format!(
@@ -70,11 +74,11 @@ pub(in crate::api::submissions) async fn enter_exam(
         .await
         .map_err(|e| ApiError::internal(e, "Failed to start transaction"))?;
 
-    repositories::sessions::acquire_exam_user_lock(&mut *tx, &exam_id, &user.id)
+    repositories::sessions::acquire_exam_user_lock(&mut *tx, &course_id, &exam_id, &user.id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to acquire session lock"))?;
 
-    let existing = repositories::sessions::find_active(&mut *tx, &exam_id, &user.id)
+    let existing = repositories::sessions::find_active(&mut *tx, &course_id, &exam_id, &user.id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch session"))?;
 
@@ -97,9 +101,10 @@ pub(in crate::api::submissions) async fn enter_exam(
         ));
     }
 
-    let attempts = repositories::sessions::count_by_exam_and_student(&mut *tx, &exam_id, &user.id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to count attempts"))?;
+    let attempts =
+        repositories::sessions::count_by_exam_and_student(&mut *tx, &course_id, &exam_id, &user.id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to count attempts"))?;
 
     if attempts >= exam.max_attempts as i64 {
         return Err(ApiError::BadRequest("Maximum attempts reached".to_string()));
@@ -110,6 +115,7 @@ pub(in crate::api::submissions) async fn enter_exam(
         &mut *tx,
         repositories::sessions::CreateSession {
             id: &session_id,
+            course_id: &course_id,
             exam_id: &exam_id,
             student_id: &user.id,
             variant_seed,
@@ -126,19 +132,20 @@ pub(in crate::api::submissions) async fn enter_exam(
     .map_err(|e| ApiError::internal(e, "Failed to create session"))?;
 
     if !inserted {
-        let existing = repositories::sessions::find_active(&mut *tx, &exam_id, &user.id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to fetch session"))?
-            .ok_or_else(|| {
-                ApiError::Conflict("An active session already exists for this exam".to_string())
-            })?;
+        let existing =
+            repositories::sessions::find_active(&mut *tx, &course_id, &exam_id, &user.id)
+                .await
+                .map_err(|e| ApiError::internal(e, "Failed to fetch session"))?
+                .ok_or_else(|| {
+                    ApiError::Conflict("An active session already exists for this exam".to_string())
+                })?;
         tx.commit().await.map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
         return Ok(Json(crate::api::submissions::helpers::session_to_response(existing)));
     }
 
     tx.commit().await.map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
 
-    let session = repositories::sessions::fetch_one_by_id(state.db(), &session_id)
+    let session = repositories::sessions::fetch_one_by_id(state.db(), &course_id, &session_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch session"))?;
 
@@ -146,11 +153,14 @@ pub(in crate::api::submissions) async fn enter_exam(
 }
 
 pub(in crate::api::submissions) async fn get_session_variant(
-    Path(session_id): Path<String>,
+    Path((course_id, session_id)): Path<(String, String)>,
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let session = crate::api::submissions::helpers::fetch_session(state.db(), &session_id).await?;
+    require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
+    let session =
+        crate::api::submissions::helpers::fetch_session(state.db(), &course_id, &session_id)
+            .await?;
 
     if session.student_id != user.id {
         return Err(ApiError::Forbidden("Access denied"));
@@ -166,6 +176,7 @@ pub(in crate::api::submissions) async fn get_session_variant(
 
     let tasks = crate::api::submissions::helpers::build_task_context_from_assignments(
         state.db(),
+        &course_id,
         &session.exam_id,
         &session.variant_assignments.0,
     )
@@ -176,13 +187,18 @@ pub(in crate::api::submissions) async fn get_session_variant(
     let remaining = if remaining_seconds < 0 { 0 } else { remaining_seconds };
 
     // Include already-uploaded images so the client can restore state after refresh
-    let submission_id_opt = repositories::submissions::find_id_by_session(state.db(), &session_id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
+    let submission_id_opt =
+        repositories::submissions::find_id_by_session(state.db(), &course_id, &session_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
     let existing_images: Vec<serde_json::Value> = match submission_id_opt {
         Some(submission_id) => {
-            let images =
-                crate::api::submissions::helpers::fetch_images(state.db(), &submission_id).await?;
+            let images = crate::api::submissions::helpers::fetch_images(
+                state.db(),
+                &course_id,
+                &submission_id,
+            )
+            .await?;
             images
                 .into_iter()
                 .map(|img| {
@@ -208,12 +224,16 @@ pub(in crate::api::submissions) async fn get_session_variant(
 }
 
 pub(in crate::api::submissions) async fn auto_save(
-    Path(session_id): Path<String>,
+    Path((course_id, session_id)): Path<(String, String)>,
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let session = crate::api::submissions::helpers::fetch_session(state.db(), &session_id).await?;
+    require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
+
+    let session =
+        crate::api::submissions::helpers::fetch_session(state.db(), &course_id, &session_id)
+            .await?;
     if session.student_id != user.id {
         return Err(ApiError::Forbidden("Access denied"));
     }
@@ -229,7 +249,7 @@ pub(in crate::api::submissions) async fn auto_save(
     }
 
     let configured_interval = state.settings().exam().auto_save_interval_seconds.max(1);
-    let rate_key = format!("autosave:{session_id}");
+    let rate_key = format!("autosave:{course_id}:{session_id}");
     let allowed = match state.redis().rate_limit(&rate_key, 1, configured_interval).await {
         Ok(value) => value,
         Err(err) => {
@@ -242,7 +262,7 @@ pub(in crate::api::submissions) async fn auto_save(
     }
 
     let now = crate::api::submissions::helpers::now_primitive();
-    repositories::sessions::update_auto_save(state.db(), &session_id, payload, now)
+    repositories::sessions::update_auto_save(state.db(), &course_id, &session_id, payload, now)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to save auto data"))?;
 

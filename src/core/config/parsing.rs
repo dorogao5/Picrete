@@ -1,6 +1,6 @@
 use std::env;
 
-use super::types::{ConfigError, Environment};
+use super::types::{ConfigError, CourseContextMode, Environment};
 
 const DEFAULT_CORS_ORIGINS: &[&str] = &[
     "http://localhost:5173",
@@ -87,6 +87,13 @@ pub(super) fn parse_environment(value: Option<String>) -> Environment {
     }
 }
 
+pub(super) fn parse_course_context_mode(value: Option<String>) -> CourseContextMode {
+    match value.as_deref().map(|item| item.to_lowercase()) {
+        Some(ref raw) if raw == "route" => CourseContextMode::Route,
+        _ => CourseContextMode::Header,
+    }
+}
+
 pub(super) fn is_supported_image_extension(extension: &str) -> bool {
     matches!(extension, "jpg" | "jpeg" | "png" | "webp" | "gif")
 }
@@ -137,5 +144,15 @@ mod tests {
         assert_eq!(parse_environment(Some("staging".to_string())), Environment::Staging);
         assert_eq!(parse_environment(Some("testing".to_string())), Environment::Test);
         assert_eq!(parse_environment(None), Environment::Development);
+    }
+
+    #[test]
+    fn parse_course_context_mode_variants() {
+        assert_eq!(parse_course_context_mode(Some("route".to_string())), CourseContextMode::Route);
+        assert_eq!(
+            parse_course_context_mode(Some("header".to_string())),
+            CourseContextMode::Header
+        );
+        assert_eq!(parse_course_context_mode(None), CourseContextMode::Header);
     }
 }

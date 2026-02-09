@@ -14,6 +14,7 @@ pub(crate) struct Settings {
     pub(super) s3: S3Settings,
     pub(super) exam: ExamSettings,
     pub(super) admin: AdminSettings,
+    pub(super) course: CourseSettings,
     pub(super) telemetry: TelemetrySettings,
 }
 
@@ -97,8 +98,28 @@ pub(crate) struct ExamSettings {
 
 #[derive(Debug, Clone)]
 pub(crate) struct AdminSettings {
-    pub(crate) first_superuser_isu: String,
+    pub(crate) first_superuser_username: String,
     pub(crate) first_superuser_password: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CourseSettings {
+    pub(crate) context_mode: CourseContextMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CourseContextMode {
+    Route,
+    Header,
+}
+
+impl CourseContextMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Route => "route",
+            Self::Header => "header",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -32,6 +32,7 @@ pub(crate) struct TaskVariantCreate {
 #[derive(Debug, Serialize)]
 pub(crate) struct TaskVariantResponse {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) task_type_id: String,
     pub(crate) content: String,
     pub(crate) parameters: serde_json::Value,
@@ -74,6 +75,7 @@ pub(crate) struct TaskTypeCreate {
 #[derive(Debug, Serialize)]
 pub(crate) struct TaskTypeResponse {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) exam_id: String,
     pub(crate) title: String,
     pub(crate) description: String,
@@ -151,7 +153,6 @@ pub(crate) struct ExamUpdate {
     #[serde(alias = "durationMinutes")]
     #[validate(range(min = 1, message = "duration_minutes must be positive"))]
     pub(crate) duration_minutes: Option<i32>,
-    // Status is intentionally omitted — use dedicated /publish endpoint
     #[serde(default)]
     pub(crate) settings: Option<serde_json::Value>,
 }
@@ -159,6 +160,7 @@ pub(crate) struct ExamUpdate {
 #[derive(Debug, Serialize)]
 pub(crate) struct ExamResponse {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) title: String,
     pub(crate) description: Option<String>,
     pub(crate) start_time: String,
@@ -181,6 +183,7 @@ pub(crate) struct ExamResponse {
 #[derive(Debug, Serialize)]
 pub(crate) struct ExamSummaryResponse {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) title: String,
     pub(crate) start_time: String,
     pub(crate) end_time: String,

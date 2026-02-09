@@ -3,12 +3,19 @@ use sqlx::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "lowercase")]
-#[sqlx(type_name = "userrole", rename_all = "lowercase")]
-pub(crate) enum UserRole {
-    Admin,
+#[sqlx(type_name = "courserole", rename_all = "lowercase")]
+pub(crate) enum CourseRole {
     Teacher,
-    Assistant,
     Student,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "membershipstatus", rename_all = "lowercase")]
+pub(crate) enum MembershipStatus {
+    Active,
+    Suspended,
+    Left,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]

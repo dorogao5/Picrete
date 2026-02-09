@@ -2,8 +2,7 @@ use uuid::Uuid;
 
 use crate::api::errors::ApiError;
 use crate::core::time::primitive_now_utc;
-use crate::db::models::{Exam, User};
-use crate::db::types::UserRole;
+use crate::db::models::Exam;
 use crate::repositories;
 use crate::schemas::exam::{
     format_primitive, ExamResponse, TaskTypeCreate, TaskTypeResponse, TaskVariantCreate,
@@ -12,6 +11,7 @@ use crate::schemas::exam::{
 
 pub(super) async fn insert_task_types(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    course_id: &str,
     exam_id: &str,
     task_types: Vec<TaskTypeCreate>,
 ) -> Result<Vec<TaskTypeResponse>, ApiError> {
@@ -25,6 +25,7 @@ pub(super) async fn insert_task_types(
             &mut **tx,
             repositories::task_types::CreateTaskType {
                 id: &task_type_id,
+                course_id,
                 exam_id,
                 title: &task_type.title,
                 description: &task_type.description,
@@ -43,10 +44,11 @@ pub(super) async fn insert_task_types(
         .await
         .map_err(|e| ApiError::internal(e, "Failed to create task type"))?;
 
-        let variants = insert_variants(tx, &task_type_id, task_type.variants).await?;
+        let variants = insert_variants(tx, course_id, &task_type_id, task_type.variants).await?;
 
         responses.push(TaskTypeResponse {
             id: task_type_id,
+            course_id: course_id.to_string(),
             exam_id: exam_id.to_string(),
             title: task_type.title,
             description: task_type.description,
@@ -69,6 +71,7 @@ pub(super) async fn insert_task_types(
 
 pub(super) async fn insert_variants(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    course_id: &str,
     task_type_id: &str,
     variants: Vec<TaskVariantCreate>,
 ) -> Result<Vec<TaskVariantResponse>, ApiError> {
@@ -82,6 +85,7 @@ pub(super) async fn insert_variants(
             &mut **tx,
             repositories::task_types::CreateTaskVariant {
                 id: &variant_id,
+                course_id,
                 task_type_id,
                 content: &variant.content,
                 parameters: variant.parameters.clone(),
@@ -97,6 +101,7 @@ pub(super) async fn insert_variants(
 
         responses.push(TaskVariantResponse {
             id: variant_id,
+            course_id: course_id.to_string(),
             task_type_id: task_type_id.to_string(),
             content: variant.content,
             parameters: variant.parameters,
@@ -113,15 +118,16 @@ pub(super) async fn insert_variants(
 
 pub(super) async fn fetch_task_types(
     pool: &sqlx::PgPool,
+    course_id: &str,
     exam_id: &str,
 ) -> Result<Vec<TaskTypeResponse>, ApiError> {
-    let task_types = repositories::task_types::list_by_exam(pool, exam_id)
+    let task_types = repositories::task_types::list_by_exam(pool, course_id, exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch task types"))?;
 
     let mut responses = Vec::new();
     for task_type in task_types {
-        let variants = repositories::task_types::list_variants(pool, &task_type.id)
+        let variants = repositories::task_types::list_variants(pool, course_id, &task_type.id)
             .await
             .map_err(|e| ApiError::internal(e, "Failed to fetch variants"))?;
 
@@ -129,6 +135,7 @@ pub(super) async fn fetch_task_types(
             .into_iter()
             .map(|variant| TaskVariantResponse {
                 id: variant.id,
+                course_id: variant.course_id,
                 task_type_id: variant.task_type_id,
                 content: variant.content,
                 parameters: variant.parameters.0,
@@ -142,6 +149,7 @@ pub(super) async fn fetch_task_types(
 
         responses.push(TaskTypeResponse {
             id: task_type.id,
+            course_id: task_type.course_id,
             exam_id: task_type.exam_id,
             title: task_type.title,
             description: task_type.description,
@@ -165,6 +173,7 @@ pub(super) async fn fetch_task_types(
 pub(super) fn exam_to_response(exam: Exam, task_types: Vec<TaskTypeResponse>) -> ExamResponse {
     ExamResponse {
         id: exam.id,
+        course_id: exam.course_id,
         title: exam.title,
         description: exam.description,
         start_time: format_primitive(exam.start_time),
@@ -183,8 +192,4 @@ pub(super) fn exam_to_response(exam: Exam, task_types: Vec<TaskTypeResponse>) ->
         published_at: exam.published_at.map(format_primitive),
         task_types,
     }
-}
-
-pub(super) fn can_manage_exam(user: &User, exam: &Exam) -> bool {
-    matches!(user.role, UserRole::Admin) || exam.created_by.as_deref() == Some(user.id.as_str())
 }

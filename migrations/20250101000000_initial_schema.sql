@@ -1,20 +1,23 @@
 -- ============================================================
--- Picrete — initial database schema
+-- Picrete — initial database schema (multi-course baseline)
 -- ============================================================
 -- Run against a fresh PostgreSQL 15+ database.
--- All identifiers are lower-case to match the sqlx type_name
--- attributes used in the Rust backend (see db/types.rs).
+-- All identifiers are lower-case to match sqlx type_name attributes.
 -- ============================================================
 
 -- ------------------------------------------------------------
 -- 1. Custom ENUM types
 -- ------------------------------------------------------------
 
-CREATE TYPE userrole AS ENUM (
-    'admin',
+CREATE TYPE courserole AS ENUM (
     'teacher',
-    'assistant',
     'student'
+);
+
+CREATE TYPE membershipstatus AS ENUM (
+    'active',
+    'suspended',
+    'left'
 );
 
 CREATE TYPE examstatus AS ENUM (
@@ -48,17 +51,15 @@ CREATE TYPE submissionstatus AS ENUM (
 );
 
 -- ------------------------------------------------------------
--- 2. Tables
+-- 2. Core identity and course domain
 -- ------------------------------------------------------------
-
--- 2.1 users ---------------------------------------------------
 
 CREATE TABLE users (
     id                  TEXT        NOT NULL,
-    isu                 TEXT        NOT NULL,
+    username            TEXT        NOT NULL,
     hashed_password     TEXT        NOT NULL,
     full_name           TEXT        NOT NULL,
-    role                userrole    NOT NULL,
+    is_platform_admin   BOOLEAN     NOT NULL DEFAULT FALSE,
     is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
     is_verified         BOOLEAN     NOT NULL DEFAULT FALSE,
     pd_consent          BOOLEAN     NOT NULL DEFAULT FALSE,
@@ -71,13 +72,91 @@ CREATE TABLE users (
     updated_at          TIMESTAMP   NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_users PRIMARY KEY (id),
-    CONSTRAINT uq_users_isu UNIQUE (isu)
+    CONSTRAINT uq_users_username UNIQUE (username)
 );
 
--- 2.2 exams ---------------------------------------------------
+CREATE TABLE courses (
+    id            TEXT       NOT NULL,
+    slug          TEXT       NOT NULL,
+    title         TEXT       NOT NULL,
+    organization  TEXT,
+    is_active     BOOLEAN    NOT NULL DEFAULT TRUE,
+    created_by    TEXT       NOT NULL,
+    created_at    TIMESTAMP  NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMP  NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_courses PRIMARY KEY (id),
+    CONSTRAINT uq_courses_slug UNIQUE (slug),
+    CONSTRAINT fk_courses_created_by
+        FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE RESTRICT
+);
+
+CREATE TABLE course_memberships (
+    id                TEXT              NOT NULL,
+    course_id         TEXT              NOT NULL,
+    user_id           TEXT              NOT NULL,
+    status            membershipstatus  NOT NULL DEFAULT 'active',
+    joined_at         TIMESTAMP         NOT NULL DEFAULT now(),
+    invited_by        TEXT,
+    identity_payload  JSONB             NOT NULL DEFAULT '{}',
+
+    CONSTRAINT pk_course_memberships PRIMARY KEY (id),
+    CONSTRAINT uq_course_memberships_course_user UNIQUE (course_id, user_id),
+    CONSTRAINT fk_course_memberships_course
+        FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE CASCADE,
+    CONSTRAINT fk_course_memberships_user
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT fk_course_memberships_invited_by
+        FOREIGN KEY (invited_by) REFERENCES users (id) ON DELETE SET NULL
+);
+
+CREATE TABLE course_membership_roles (
+    membership_id  TEXT       NOT NULL,
+    role           courserole NOT NULL,
+    granted_at     TIMESTAMP  NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_course_membership_roles PRIMARY KEY (membership_id, role),
+    CONSTRAINT fk_course_membership_roles_membership
+        FOREIGN KEY (membership_id) REFERENCES course_memberships (id) ON DELETE CASCADE
+);
+
+CREATE TABLE course_invite_codes (
+    id               TEXT       NOT NULL,
+    course_id        TEXT       NOT NULL,
+    role             courserole NOT NULL,
+    code_hash        TEXT       NOT NULL,
+    is_active        BOOLEAN    NOT NULL DEFAULT TRUE,
+    rotated_from_id  TEXT,
+    expires_at       TIMESTAMP,
+    usage_count      BIGINT     NOT NULL DEFAULT 0,
+    created_at       TIMESTAMP  NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMP  NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_course_invite_codes PRIMARY KEY (id),
+    CONSTRAINT fk_course_invite_codes_course
+        FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE CASCADE,
+    CONSTRAINT fk_course_invite_codes_rotated_from
+        FOREIGN KEY (rotated_from_id) REFERENCES course_invite_codes (id) ON DELETE SET NULL
+);
+
+CREATE TABLE course_identity_policies (
+    course_id    TEXT       NOT NULL,
+    rule_type    TEXT       NOT NULL,
+    rule_config  JSONB      NOT NULL DEFAULT '{}',
+    updated_at   TIMESTAMP  NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_course_identity_policies PRIMARY KEY (course_id),
+    CONSTRAINT fk_course_identity_policies_course
+        FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE CASCADE
+);
+
+-- ------------------------------------------------------------
+-- 3. Academic domain (strictly course-scoped)
+-- ------------------------------------------------------------
 
 CREATE TABLE exams (
     id                      TEXT        NOT NULL,
+    course_id               TEXT        NOT NULL,
     title                   TEXT        NOT NULL,
     description             TEXT,
     start_time              TIMESTAMP   NOT NULL,
@@ -96,37 +175,39 @@ CREATE TABLE exams (
     settings                JSONB       NOT NULL DEFAULT '{}',
 
     CONSTRAINT pk_exams PRIMARY KEY (id),
+    CONSTRAINT uq_exams_id_course UNIQUE (id, course_id),
+    CONSTRAINT fk_exams_course
+        FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE CASCADE,
     CONSTRAINT fk_exams_created_by
         FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL
 );
 
--- 2.3 task_types ----------------------------------------------
-
 CREATE TABLE task_types (
-    id                TEXT            NOT NULL,
-    exam_id           TEXT            NOT NULL,
-    title             TEXT            NOT NULL,
-    description       TEXT            NOT NULL,
-    order_index       INTEGER         NOT NULL DEFAULT 0,
+    id                TEXT             NOT NULL,
+    course_id         TEXT             NOT NULL,
+    exam_id           TEXT             NOT NULL,
+    title             TEXT             NOT NULL,
+    description       TEXT             NOT NULL,
+    order_index       INTEGER          NOT NULL DEFAULT 0,
     max_score         DOUBLE PRECISION NOT NULL DEFAULT 0,
-    rubric            JSONB           NOT NULL DEFAULT '{}',
-    difficulty        difficultylevel NOT NULL DEFAULT 'medium',
-    taxonomy_tags     JSONB           NOT NULL DEFAULT '[]',
-    formulas          JSONB           NOT NULL DEFAULT '[]',
-    units             JSONB           NOT NULL DEFAULT '[]',
-    validation_rules  JSONB           NOT NULL DEFAULT '{}',
-    created_at        TIMESTAMP       NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMP       NOT NULL DEFAULT now(),
+    rubric            JSONB            NOT NULL DEFAULT '{}',
+    difficulty        difficultylevel  NOT NULL DEFAULT 'medium',
+    taxonomy_tags     JSONB            NOT NULL DEFAULT '[]',
+    formulas          JSONB            NOT NULL DEFAULT '[]',
+    units             JSONB            NOT NULL DEFAULT '[]',
+    validation_rules  JSONB            NOT NULL DEFAULT '{}',
+    created_at        TIMESTAMP        NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMP        NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_task_types PRIMARY KEY (id),
+    CONSTRAINT uq_task_types_id_course UNIQUE (id, course_id),
     CONSTRAINT fk_task_types_exam
-        FOREIGN KEY (exam_id) REFERENCES exams (id) ON DELETE CASCADE
+        FOREIGN KEY (exam_id, course_id) REFERENCES exams (id, course_id) ON DELETE CASCADE
 );
-
--- 2.4 task_variants -------------------------------------------
 
 CREATE TABLE task_variants (
     id                  TEXT             NOT NULL,
+    course_id           TEXT             NOT NULL,
     task_type_id        TEXT             NOT NULL,
     content             TEXT             NOT NULL,
     parameters          JSONB            NOT NULL DEFAULT '{}',
@@ -137,14 +218,14 @@ CREATE TABLE task_variants (
     created_at          TIMESTAMP        NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_task_variants PRIMARY KEY (id),
+    CONSTRAINT uq_task_variants_id_course UNIQUE (id, course_id),
     CONSTRAINT fk_task_variants_task_type
-        FOREIGN KEY (task_type_id) REFERENCES task_types (id) ON DELETE CASCADE
+        FOREIGN KEY (task_type_id, course_id) REFERENCES task_types (id, course_id) ON DELETE CASCADE
 );
-
--- 2.5 exam_sessions -------------------------------------------
 
 CREATE TABLE exam_sessions (
     id                    TEXT           NOT NULL,
+    course_id             TEXT           NOT NULL,
     exam_id               TEXT           NOT NULL,
     student_id            TEXT           NOT NULL,
     variant_seed          INTEGER        NOT NULL,
@@ -162,16 +243,16 @@ CREATE TABLE exam_sessions (
     updated_at            TIMESTAMP      NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_exam_sessions PRIMARY KEY (id),
+    CONSTRAINT uq_exam_sessions_id_course UNIQUE (id, course_id),
     CONSTRAINT fk_exam_sessions_exam
-        FOREIGN KEY (exam_id) REFERENCES exams (id) ON DELETE CASCADE,
+        FOREIGN KEY (exam_id, course_id) REFERENCES exams (id, course_id) ON DELETE CASCADE,
     CONSTRAINT fk_exam_sessions_student
         FOREIGN KEY (student_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
--- 2.6 submissions ---------------------------------------------
-
 CREATE TABLE submissions (
     id                            TEXT              NOT NULL,
+    course_id                     TEXT              NOT NULL,
     session_id                    TEXT              NOT NULL,
     student_id                    TEXT              NOT NULL,
     submitted_at                  TIMESTAMP         NOT NULL,
@@ -198,19 +279,19 @@ CREATE TABLE submissions (
     updated_at                    TIMESTAMP         NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_submissions PRIMARY KEY (id),
+    CONSTRAINT uq_submissions_id_course UNIQUE (id, course_id),
     CONSTRAINT uq_submissions_session_id UNIQUE (session_id),
     CONSTRAINT fk_submissions_session
-        FOREIGN KEY (session_id) REFERENCES exam_sessions (id) ON DELETE CASCADE,
+        FOREIGN KEY (session_id, course_id) REFERENCES exam_sessions (id, course_id) ON DELETE CASCADE,
     CONSTRAINT fk_submissions_student
         FOREIGN KEY (student_id) REFERENCES users (id) ON DELETE CASCADE,
     CONSTRAINT fk_submissions_reviewed_by
         FOREIGN KEY (reviewed_by) REFERENCES users (id) ON DELETE SET NULL
 );
 
--- 2.7 submission_images ---------------------------------------
-
 CREATE TABLE submission_images (
     id               TEXT             NOT NULL,
+    course_id        TEXT             NOT NULL,
     submission_id    TEXT             NOT NULL,
     filename         TEXT             NOT NULL,
     file_path        TEXT             NOT NULL,
@@ -226,13 +307,12 @@ CREATE TABLE submission_images (
 
     CONSTRAINT pk_submission_images PRIMARY KEY (id),
     CONSTRAINT fk_submission_images_submission
-        FOREIGN KEY (submission_id) REFERENCES submissions (id) ON DELETE CASCADE
+        FOREIGN KEY (submission_id, course_id) REFERENCES submissions (id, course_id) ON DELETE CASCADE
 );
-
--- 2.8 submission_scores ---------------------------------------
 
 CREATE TABLE submission_scores (
     id                      TEXT             NOT NULL,
+    course_id               TEXT             NOT NULL,
     submission_id           TEXT             NOT NULL,
     task_type_id            TEXT             NOT NULL,
     criterion_name          TEXT             NOT NULL,
@@ -247,51 +327,62 @@ CREATE TABLE submission_scores (
 
     CONSTRAINT pk_submission_scores PRIMARY KEY (id),
     CONSTRAINT fk_submission_scores_submission
-        FOREIGN KEY (submission_id) REFERENCES submissions (id) ON DELETE CASCADE,
+        FOREIGN KEY (submission_id, course_id) REFERENCES submissions (id, course_id) ON DELETE CASCADE,
     CONSTRAINT fk_submission_scores_task_type
-        FOREIGN KEY (task_type_id) REFERENCES task_types (id) ON DELETE CASCADE
+        FOREIGN KEY (task_type_id, course_id) REFERENCES task_types (id, course_id) ON DELETE CASCADE
 );
 
 -- ------------------------------------------------------------
--- 3. Indexes
+-- 4. Indexes
 -- ------------------------------------------------------------
 
 -- users -------------------------------------------------------
--- (isu already covered by UNIQUE constraint uq_users_isu)
+CREATE INDEX idx_users_created_at ON users (created_at DESC);
+
+-- courses -----------------------------------------------------
+CREATE INDEX idx_courses_created_by ON courses (created_by);
+
+-- course memberships -----------------------------------------
+CREATE INDEX idx_course_memberships_user_id ON course_memberships (user_id);
+CREATE INDEX idx_course_memberships_course_status ON course_memberships (course_id, status);
+
+-- invite codes ------------------------------------------------
+CREATE UNIQUE INDEX uq_course_invite_codes_code_hash ON course_invite_codes (code_hash);
+CREATE UNIQUE INDEX uq_course_invite_codes_active_role
+    ON course_invite_codes (course_id, role)
+    WHERE is_active = TRUE;
+CREATE INDEX idx_course_invite_codes_course_active ON course_invite_codes (course_id, is_active);
 
 -- exams -------------------------------------------------------
-CREATE INDEX idx_exams_created_by     ON exams (created_by);
-CREATE INDEX idx_exams_status         ON exams (status);
-CREATE INDEX idx_exams_start_time     ON exams (start_time DESC);
-CREATE INDEX idx_exams_status_end_time ON exams (status, end_time);
+CREATE INDEX idx_exams_course_status ON exams (course_id, status);
+CREATE INDEX idx_exams_course_start_time ON exams (course_id, start_time DESC);
+CREATE INDEX idx_exams_course_status_end_time ON exams (course_id, status, end_time);
 
--- task_types --------------------------------------------------
-CREATE INDEX idx_task_types_exam_id   ON task_types (exam_id);
+-- task types / variants --------------------------------------
+CREATE INDEX idx_task_types_course_exam ON task_types (course_id, exam_id, order_index);
+CREATE INDEX idx_task_variants_course_task_type ON task_variants (course_id, task_type_id);
 
--- task_variants -----------------------------------------------
-CREATE INDEX idx_task_variants_task_type_id ON task_variants (task_type_id);
-
--- exam_sessions -----------------------------------------------
-CREATE INDEX idx_exam_sessions_exam_id              ON exam_sessions (exam_id);
-CREATE INDEX idx_exam_sessions_student_id           ON exam_sessions (student_id);
-CREATE INDEX idx_exam_sessions_exam_student          ON exam_sessions (exam_id, student_id);
-CREATE INDEX idx_exam_sessions_status               ON exam_sessions (status);
-CREATE INDEX idx_exam_sessions_student_created       ON exam_sessions (student_id, created_at DESC);
+-- exam sessions ----------------------------------------------
+CREATE INDEX idx_exam_sessions_course_exam_student ON exam_sessions (course_id, exam_id, student_id);
+CREATE INDEX idx_exam_sessions_course_student_created ON exam_sessions (course_id, student_id, created_at DESC);
+CREATE INDEX idx_exam_sessions_course_status ON exam_sessions (course_id, status);
 
 -- submissions -------------------------------------------------
--- (session_id already covered by UNIQUE constraint uq_submissions_session_id)
-CREATE INDEX idx_submissions_student_id              ON submissions (student_id);
-CREATE INDEX idx_submissions_status                  ON submissions (status);
-CREATE INDEX idx_submissions_status_ai_started       ON submissions (status, ai_request_started_at)
+CREATE INDEX idx_submissions_course_student ON submissions (course_id, student_id);
+CREATE INDEX idx_submissions_course_status ON submissions (course_id, status);
+CREATE INDEX idx_submissions_course_status_ai_started
+    ON submissions (course_id, status, ai_request_started_at)
     WHERE ai_request_started_at IS NULL;
-CREATE INDEX idx_submissions_flagged_retry           ON submissions (status, ai_retry_count)
+CREATE INDEX idx_submissions_course_flagged_retry
+    ON submissions (course_id, status, ai_retry_count)
     WHERE status = 'flagged' AND ai_error IS NOT NULL;
-CREATE INDEX idx_submissions_created_at              ON submissions (created_at);
+CREATE INDEX idx_submissions_course_created_at ON submissions (course_id, created_at);
 
--- submission_images -------------------------------------------
-CREATE INDEX idx_submission_images_submission_id     ON submission_images (submission_id);
-CREATE INDEX idx_submission_images_order             ON submission_images (submission_id, order_index);
+-- submission images -------------------------------------------
+CREATE INDEX idx_submission_images_course_submission ON submission_images (course_id, submission_id);
+CREATE INDEX idx_submission_images_course_submission_order
+    ON submission_images (course_id, submission_id, order_index);
 
--- submission_scores -------------------------------------------
-CREATE INDEX idx_submission_scores_submission_id     ON submission_scores (submission_id);
-CREATE INDEX idx_submission_scores_task_type_id      ON submission_scores (task_type_id);
+-- submission scores -------------------------------------------
+CREATE INDEX idx_submission_scores_course_submission ON submission_scores (course_id, submission_id);
+CREATE INDEX idx_submission_scores_course_task_type ON submission_scores (course_id, task_type_id);

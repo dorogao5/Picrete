@@ -1,6 +1,5 @@
 use crate::api::pagination::default_limit;
 use crate::core::time::primitive_now_utc;
-use crate::db::types::UserRole;
 use crate::repositories;
 use crate::test_support;
 use axum::http::{Method, StatusCode};
@@ -11,21 +10,16 @@ use tower::ServiceExt;
 async fn admin_can_create_and_update_user() {
     let ctx = test_support::setup_test_context().await;
 
-    let admin = test_support::insert_user(
-        ctx.state.db(),
-        "000001",
-        "Admin User",
-        UserRole::Admin,
-        "admin-pass",
-    )
-    .await;
+    let admin =
+        test_support::insert_platform_admin(ctx.state.db(), "admin001", "Admin User", "admin-pass")
+            .await;
     let token = test_support::bearer_token(&admin.id, ctx.state.settings());
 
     let create_payload = json!({
-        "isu": "123456",
+        "username": "student123",
         "full_name": "Student User",
         "password": "student-pass",
-        "role": "student",
+        "is_platform_admin": false,
         "is_active": true,
         "is_verified": false
     });
@@ -46,9 +40,9 @@ async fn admin_can_create_and_update_user() {
     let created = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::CREATED, "response: {created}");
     let user_id = created["id"].as_str().expect("user id").to_string();
-    assert_eq!(created["isu"], "123456");
+    assert_eq!(created["username"], "student123");
     assert_eq!(created["full_name"], "Student User");
-    assert_eq!(created["role"], "student");
+    assert_eq!(created["is_platform_admin"], false);
 
     let update_payload = json!({
         "full_name": "Updated Student",
@@ -94,14 +88,9 @@ async fn admin_can_create_and_update_user() {
 async fn admin_create_user_rejects_short_password() {
     let ctx = test_support::setup_test_context().await;
 
-    let admin = test_support::insert_user(
-        ctx.state.db(),
-        "000051",
-        "Admin User",
-        UserRole::Admin,
-        "admin-pass",
-    )
-    .await;
+    let admin =
+        test_support::insert_platform_admin(ctx.state.db(), "admin051", "Admin User", "admin-pass")
+            .await;
     let token = test_support::bearer_token(&admin.id, ctx.state.settings());
 
     let response = ctx
@@ -111,10 +100,9 @@ async fn admin_create_user_rejects_short_password() {
             "/api/v1/users",
             Some(&token),
             Some(json!({
-                "isu": "123450",
+                "username": "student450",
                 "full_name": "Short Password",
-                "password": "short",
-                "role": "student"
+                "password": "short"
             })),
         ))
         .await
@@ -135,14 +123,9 @@ fn default_limit_is_positive() {
 async fn inactive_user_token_is_rejected_by_guard() {
     let ctx = test_support::setup_test_context().await;
 
-    let user = test_support::insert_user(
-        ctx.state.db(),
-        "000099",
-        "Inactive User",
-        UserRole::Student,
-        "student-pass",
-    )
-    .await;
+    let user =
+        test_support::insert_user(ctx.state.db(), "student099", "Inactive User", "student-pass")
+            .await;
     let token = test_support::bearer_token(&user.id, ctx.state.settings());
 
     repositories::users::update(
@@ -150,7 +133,7 @@ async fn inactive_user_token_is_rejected_by_guard() {
         &user.id,
         repositories::users::UpdateUser {
             full_name: None,
-            role: None,
+            is_platform_admin: None,
             is_active: Some(false),
             is_verified: None,
             hashed_password: None,

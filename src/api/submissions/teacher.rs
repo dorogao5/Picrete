@@ -3,40 +3,38 @@ use axum::{
     Json,
 };
 use time::OffsetDateTime;
-
 use validator::Validate;
 
 use crate::api::errors::ApiError;
-use crate::api::guards::{CurrentTeacher, CurrentUser};
+use crate::api::guards::{require_course_membership, require_course_role, CurrentUser};
 use crate::core::state::AppState;
-use crate::db::types::{SubmissionStatus, UserRole};
+use crate::db::types::{CourseRole, SubmissionStatus};
 use crate::repositories;
 use crate::schemas::submission::{
     format_primitive, SubmissionApproveRequest, SubmissionOverrideRequest,
 };
 
 pub(super) async fn get_submission(
-    Path(submission_id): Path<String>,
-    CurrentTeacher(teacher): CurrentTeacher,
+    Path((course_id, submission_id)): Path<(String, String)>,
+    CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let details = repositories::submissions::find_teacher_details(state.db(), &submission_id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch submission details"))?;
+    require_course_role(&state, &user, &course_id, CourseRole::Teacher).await?;
+
+    let details =
+        repositories::submissions::find_teacher_details(state.db(), &course_id, &submission_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch submission details"))?;
 
     let Some(details) = details else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
-    if !matches!(teacher.role, UserRole::Admin)
-        && details.exam_created_by.as_deref() != Some(teacher.id.as_str())
-    {
-        return Err(ApiError::Forbidden("You can only manage submissions for your own exams"));
-    }
 
-    let images = super::helpers::fetch_images(state.db(), &details.id).await?;
-    let scores = super::helpers::fetch_scores(state.db(), &details.id).await?;
+    let images = super::helpers::fetch_images(state.db(), &course_id, &details.id).await?;
+    let scores = super::helpers::fetch_scores(state.db(), &course_id, &details.id).await?;
     let tasks_payload = super::helpers::build_task_context_from_assignments(
         state.db(),
+        &course_id,
         &details.exam_id,
         &details.variant_assignments.0,
     )
@@ -44,6 +42,7 @@ pub(super) async fn get_submission(
 
     Ok(Json(serde_json::json!({
         "id": details.id,
+        "course_id": details.course_id,
         "session_id": details.session_id,
         "student_id": details.student_id,
         "submitted_at": format_primitive(details.submitted_at),
@@ -61,26 +60,27 @@ pub(super) async fn get_submission(
         "images": images,
         "scores": scores,
         "student_name": details.student_name,
-        "student_isu": details.student_isu,
-        "exam": {"id": details.exam_id, "title": details.exam_title},
+        "student_username": details.student_username,
+        "exam": {"id": details.exam_id, "course_id": course_id, "title": details.exam_title},
         "tasks": tasks_payload,
     })))
 }
 
 pub(super) async fn approve_submission(
-    Path(submission_id): Path<String>,
-    CurrentTeacher(teacher): CurrentTeacher,
+    Path((course_id, submission_id)): Path<(String, String)>,
+    CurrentUser(teacher): CurrentUser,
     State(state): State<AppState>,
     Json(payload): Json<SubmissionApproveRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let submission = repositories::submissions::find_by_id(state.db(), &submission_id)
+    require_course_role(&state, &teacher, &course_id, CourseRole::Teacher).await?;
+
+    let submission = repositories::submissions::find_by_id(state.db(), &course_id, &submission_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
 
     let Some(submission) = submission else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
-    ensure_teacher_can_manage_submission(&state, &teacher, &submission_id).await?;
 
     if submission.ai_score.is_none() {
         return Err(ApiError::BadRequest(
@@ -91,6 +91,7 @@ pub(super) async fn approve_submission(
     let now = super::helpers::now_primitive();
     repositories::submissions::approve(
         state.db(),
+        &course_id,
         &submission_id,
         submission.ai_score,
         payload.teacher_comments,
@@ -104,21 +105,21 @@ pub(super) async fn approve_submission(
 }
 
 pub(super) async fn override_score(
-    Path(submission_id): Path<String>,
-    CurrentTeacher(teacher): CurrentTeacher,
+    Path((course_id, submission_id)): Path<(String, String)>,
+    CurrentUser(teacher): CurrentUser,
     State(state): State<AppState>,
     Json(payload): Json<SubmissionOverrideRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    require_course_role(&state, &teacher, &course_id, CourseRole::Teacher).await?;
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let submission = repositories::submissions::find_by_id(state.db(), &submission_id)
+    let submission = repositories::submissions::find_by_id(state.db(), &course_id, &submission_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
 
     let Some(submission) = submission else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
-    ensure_teacher_can_manage_submission(&state, &teacher, &submission_id).await?;
 
     if payload.final_score > submission.max_score {
         return Err(ApiError::BadRequest(format!(
@@ -130,6 +131,7 @@ pub(super) async fn override_score(
     let now = super::helpers::now_primitive();
     repositories::submissions::override_score(
         state.db(),
+        &course_id,
         &submission_id,
         payload.final_score,
         payload.teacher_comments,
@@ -143,11 +145,13 @@ pub(super) async fn override_score(
 }
 
 pub(super) async fn get_image_view_url(
-    Path(image_id): Path<String>,
+    Path((course_id, image_id)): Path<(String, String)>,
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let image = repositories::images::find_by_id(state.db(), &image_id)
+    let access = require_course_membership(&state, &user, &course_id).await?;
+
+    let image = repositories::images::find_by_id(state.db(), &course_id, &image_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch image"))?;
 
@@ -155,26 +159,16 @@ pub(super) async fn get_image_view_url(
         return Err(ApiError::NotFound("Image not found".to_string()));
     };
 
-    let submission = repositories::submissions::fetch_one_by_id(state.db(), &image.submission_id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
+    let submission =
+        repositories::submissions::fetch_one_by_id(state.db(), &course_id, &image.submission_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
 
     let is_owner = submission.student_id == user.id;
-    let is_teacher = matches!(user.role, UserRole::Teacher | UserRole::Admin);
+    let is_teacher = has_teacher_access(&user, &access.roles);
 
     if !is_owner && !is_teacher {
         return Err(ApiError::Forbidden("Access denied"));
-    }
-    if matches!(user.role, UserRole::Teacher) {
-        let exam_creator =
-            repositories::submissions::find_exam_creator_by_submission(state.db(), &submission.id)
-                .await
-                .map_err(|e| ApiError::internal(e, "Failed to fetch submission owner"))?
-                .ok_or_else(|| ApiError::NotFound("Submission not found".to_string()))?;
-
-        if exam_creator != user.id {
-            return Err(ApiError::Forbidden("Access denied"));
-        }
     }
 
     if !image.file_path.starts_with("submissions/") {
@@ -201,21 +195,23 @@ pub(super) async fn get_image_view_url(
 }
 
 pub(super) async fn regrade_submission(
-    Path(submission_id): Path<String>,
-    CurrentTeacher(teacher): CurrentTeacher,
+    Path((course_id, submission_id)): Path<(String, String)>,
+    CurrentUser(teacher): CurrentUser,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let submission = repositories::submissions::find_by_id(state.db(), &submission_id)
+    require_course_role(&state, &teacher, &course_id, CourseRole::Teacher).await?;
+
+    let submission = repositories::submissions::find_by_id(state.db(), &course_id, &submission_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
 
     let Some(_submission) = submission else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
-    ensure_teacher_can_manage_submission(&state, &teacher, &submission_id).await?;
 
     repositories::submissions::queue_regrade(
         state.db(),
+        &course_id,
         &submission_id,
         super::helpers::now_primitive(),
     )
@@ -224,6 +220,7 @@ pub(super) async fn regrade_submission(
 
     tracing::info!(
         teacher_id = %teacher.id,
+        course_id = %course_id,
         submission_id = %submission_id,
         action = "submission_regrade",
         "Submission regrade queued"
@@ -238,11 +235,12 @@ pub(super) async fn regrade_submission(
 }
 
 pub(super) async fn grading_status(
-    Path(submission_id): Path<String>,
+    Path((course_id, submission_id)): Path<(String, String)>,
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let submission = repositories::submissions::find_by_id(state.db(), &submission_id)
+    let access = require_course_membership(&state, &user, &course_id).await?;
+    let submission = repositories::submissions::find_by_id(state.db(), &course_id, &submission_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
 
@@ -251,16 +249,9 @@ pub(super) async fn grading_status(
     };
 
     let is_owner = submission.student_id == user.id;
-    if !is_owner {
-        match user.role {
-            UserRole::Admin => {}
-            UserRole::Teacher => {
-                ensure_teacher_can_manage_submission(&state, &user, &submission_id).await?;
-            }
-            _ => {
-                return Err(ApiError::Forbidden("Access denied"));
-            }
-        }
+    let is_teacher = has_teacher_access(&user, &access.roles);
+    if !is_owner && !is_teacher {
+        return Err(ApiError::Forbidden("Access denied"));
     }
 
     let (progress, status_message) = match submission.status {
@@ -285,6 +276,7 @@ pub(super) async fn grading_status(
     };
 
     Ok(Json(serde_json::json!({
+        "course_id": course_id,
         "submission_id": submission_id,
         "status": submission.status,
         "progress": progress,
@@ -303,24 +295,6 @@ pub(super) async fn grading_status(
     })))
 }
 
-async fn ensure_teacher_can_manage_submission(
-    state: &AppState,
-    teacher: &crate::db::models::User,
-    submission_id: &str,
-) -> Result<(), ApiError> {
-    if matches!(teacher.role, UserRole::Admin) {
-        return Ok(());
-    }
-
-    let exam_creator =
-        repositories::submissions::find_exam_creator_by_submission(state.db(), submission_id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to fetch submission owner"))?
-            .ok_or_else(|| ApiError::NotFound("Submission not found".to_string()))?;
-
-    if exam_creator == teacher.id {
-        Ok(())
-    } else {
-        Err(ApiError::Forbidden("You can only manage submissions for your own exams"))
-    }
+fn has_teacher_access(user: &crate::db::models::User, roles: &[CourseRole]) -> bool {
+    user.is_platform_admin || roles.iter().any(|role| *role == CourseRole::Teacher)
 }

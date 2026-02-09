@@ -15,6 +15,7 @@ use crate::schemas::submission::{
 pub(crate) fn session_to_response(session: ExamSession) -> ExamSessionResponse {
     ExamSessionResponse {
         id: session.id,
+        course_id: session.course_id,
         exam_id: session.exam_id,
         student_id: session.student_id,
         variant_seed: session.variant_seed,
@@ -35,6 +36,7 @@ pub(crate) fn to_submission_response(
 ) -> SubmissionResponse {
     SubmissionResponse {
         id: submission.id,
+        course_id: submission.course_id,
         session_id: submission.session_id,
         student_id: submission.student_id,
         submitted_at: format_primitive(submission.submitted_at),
@@ -54,8 +56,12 @@ pub(crate) fn to_submission_response(
     }
 }
 
-pub(crate) async fn fetch_exam(pool: &sqlx::PgPool, exam_id: &str) -> Result<Exam, ApiError> {
-    repositories::exams::find_by_id(pool, exam_id)
+pub(crate) async fn fetch_exam(
+    pool: &sqlx::PgPool,
+    course_id: &str,
+    exam_id: &str,
+) -> Result<Exam, ApiError> {
+    repositories::exams::find_by_id(pool, course_id, exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?
         .ok_or_else(|| ApiError::NotFound("Exam not found".to_string()))
@@ -63,9 +69,10 @@ pub(crate) async fn fetch_exam(pool: &sqlx::PgPool, exam_id: &str) -> Result<Exa
 
 pub(crate) async fn fetch_session(
     pool: &sqlx::PgPool,
+    course_id: &str,
     session_id: &str,
 ) -> Result<ExamSession, ApiError> {
-    repositories::sessions::find_by_id(pool, session_id)
+    repositories::sessions::find_by_id(pool, course_id, session_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch session"))?
         .ok_or_else(|| ApiError::NotFound("Session not found".to_string()))
@@ -73,18 +80,20 @@ pub(crate) async fn fetch_session(
 
 pub(crate) async fn fetch_task_types(
     pool: &sqlx::PgPool,
+    course_id: &str,
     exam_id: &str,
 ) -> Result<Vec<TaskType>, ApiError> {
-    repositories::task_types::list_by_exam(pool, exam_id)
+    repositories::task_types::list_by_exam(pool, course_id, exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch task types"))
 }
 
 pub(crate) async fn fetch_images(
     pool: &sqlx::PgPool,
+    course_id: &str,
     submission_id: &str,
 ) -> Result<Vec<SubmissionImageResponse>, ApiError> {
-    let images = repositories::images::list_by_submission(pool, submission_id)
+    let images = repositories::images::list_by_submission(pool, course_id, submission_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch images"))?;
 
@@ -92,6 +101,7 @@ pub(crate) async fn fetch_images(
         .into_iter()
         .map(|image| SubmissionImageResponse {
             id: image.id,
+            course_id: image.course_id,
             filename: image.filename,
             order_index: image.order_index,
             file_size: image.file_size,
@@ -105,9 +115,10 @@ pub(crate) async fn fetch_images(
 
 pub(crate) async fn fetch_scores(
     pool: &sqlx::PgPool,
+    course_id: &str,
     submission_id: &str,
 ) -> Result<Vec<SubmissionScoreResponse>, ApiError> {
-    let scores = repositories::scores::list_by_submission(pool, submission_id)
+    let scores = repositories::scores::list_by_submission(pool, course_id, submission_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch scores"))?;
 
@@ -115,6 +126,7 @@ pub(crate) async fn fetch_scores(
         .into_iter()
         .map(|score| SubmissionScoreResponse {
             id: score.id,
+            course_id: score.course_id,
             submission_id: score.submission_id,
             task_type_id: score.task_type_id,
             criterion_name: score.criterion_name,
@@ -130,14 +142,16 @@ pub(crate) async fn fetch_scores(
 
 pub(crate) async fn build_task_context_from_assignments(
     pool: &sqlx::PgPool,
+    course_id: &str,
     exam_id: &str,
     assignments: &HashMap<String, String>,
 ) -> Result<Vec<serde_json::Value>, ApiError> {
-    let task_types = fetch_task_types(pool, exam_id).await?;
+    let task_types = fetch_task_types(pool, course_id, exam_id).await?;
     let task_type_ids = task_types.iter().map(|task_type| task_type.id.clone()).collect::<Vec<_>>();
-    let variants = repositories::task_types::list_variants_by_task_type_ids(pool, &task_type_ids)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch variants"))?;
+    let variants =
+        repositories::task_types::list_variants_by_task_type_ids(pool, course_id, &task_type_ids)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch variants"))?;
 
     let mut variants_by_task_id = HashMap::<String, HashMap<String, TaskVariant>>::new();
     for variant in variants {
@@ -182,7 +196,7 @@ pub(crate) async fn enforce_deadline(
     session: &ExamSession,
     pool: &sqlx::PgPool,
 ) -> Result<(PrimitiveDateTime, SessionStatus), ApiError> {
-    let exam = fetch_exam(pool, &session.exam_id).await?;
+    let exam = fetch_exam(pool, &session.course_id, &session.exam_id).await?;
     let hard_deadline =
         if exam.end_time < session.expires_at { exam.end_time } else { session.expires_at };
 
@@ -191,6 +205,7 @@ pub(crate) async fn enforce_deadline(
     {
         repositories::sessions::expire_with_deadline(
             pool,
+            &session.course_id,
             &session.id,
             hard_deadline,
             now_primitive(),
@@ -220,23 +235,26 @@ pub(crate) async fn ensure_submission(
     pool: &sqlx::PgPool,
     session: &ExamSession,
 ) -> Result<String, ApiError> {
-    let existing_id = repositories::submissions::find_id_by_session(pool, &session.id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
+    let existing_id =
+        repositories::submissions::find_id_by_session(pool, &session.course_id, &session.id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
 
     if let Some(id) = existing_id {
         return Ok(id);
     }
 
-    let max_score = repositories::exams::max_score_for_exam(pool, &session.exam_id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch max score"))?;
+    let max_score =
+        repositories::exams::max_score_for_exam(pool, &session.course_id, &session.exam_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch max score"))?;
 
     let now = now_primitive();
     let id = Uuid::new_v4().to_string();
     repositories::submissions::create_if_absent(
         pool,
         &id,
+        &session.course_id,
         &session.id,
         &session.student_id,
         SubmissionStatus::Uploaded,
@@ -247,7 +265,7 @@ pub(crate) async fn ensure_submission(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to create submission"))?;
 
-    repositories::submissions::find_id_by_session(pool, &session.id)
+    repositories::submissions::find_id_by_session(pool, &session.course_id, &session.id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?
         .ok_or_else(|| ApiError::Internal("Submission missing after creation".to_string()))

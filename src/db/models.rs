@@ -5,16 +5,18 @@ use sqlx::types::Json;
 use sqlx::FromRow;
 use time::{OffsetDateTime, PrimitiveDateTime};
 
-use crate::db::types::{DifficultyLevel, ExamStatus, SessionStatus, SubmissionStatus, UserRole};
+use crate::db::types::{
+    CourseRole, DifficultyLevel, ExamStatus, MembershipStatus, SessionStatus, SubmissionStatus,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub(crate) struct User {
     pub(crate) id: String,
-    pub(crate) isu: String,
+    pub(crate) username: String,
     #[serde(skip_serializing)]
     pub(crate) hashed_password: String,
     pub(crate) full_name: String,
-    pub(crate) role: UserRole,
+    pub(crate) is_platform_admin: bool,
     pub(crate) is_active: bool,
     pub(crate) is_verified: bool,
     pub(crate) pd_consent: bool,
@@ -28,8 +30,61 @@ pub(crate) struct User {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct Course {
+    pub(crate) id: String,
+    pub(crate) slug: String,
+    pub(crate) title: String,
+    pub(crate) organization: Option<String>,
+    pub(crate) is_active: bool,
+    pub(crate) created_by: String,
+    pub(crate) created_at: PrimitiveDateTime,
+    pub(crate) updated_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct CourseMembership {
+    pub(crate) id: String,
+    pub(crate) course_id: String,
+    pub(crate) user_id: String,
+    pub(crate) status: MembershipStatus,
+    pub(crate) joined_at: PrimitiveDateTime,
+    pub(crate) invited_by: Option<String>,
+    pub(crate) identity_payload: Json<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct CourseMembershipRole {
+    pub(crate) membership_id: String,
+    pub(crate) role: CourseRole,
+    pub(crate) granted_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct CourseInviteCode {
+    pub(crate) id: String,
+    pub(crate) course_id: String,
+    pub(crate) role: CourseRole,
+    pub(crate) code_hash: String,
+    pub(crate) is_active: bool,
+    pub(crate) rotated_from_id: Option<String>,
+    pub(crate) expires_at: Option<PrimitiveDateTime>,
+    pub(crate) usage_count: i64,
+    pub(crate) created_at: PrimitiveDateTime,
+    pub(crate) updated_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct CourseIdentityPolicy {
+    pub(crate) course_id: String,
+    pub(crate) rule_type: String,
+    pub(crate) rule_config: Json<serde_json::Value>,
+    pub(crate) updated_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub(crate) struct Exam {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) title: String,
     pub(crate) description: Option<String>,
     pub(crate) start_time: PrimitiveDateTime,
@@ -51,6 +106,7 @@ pub(crate) struct Exam {
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub(crate) struct TaskType {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) exam_id: String,
     pub(crate) title: String,
     pub(crate) description: String,
@@ -69,6 +125,7 @@ pub(crate) struct TaskType {
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub(crate) struct TaskVariant {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) task_type_id: String,
     pub(crate) content: String,
     pub(crate) parameters: Json<serde_json::Value>,
@@ -82,6 +139,7 @@ pub(crate) struct TaskVariant {
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub(crate) struct ExamSession {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) exam_id: String,
     pub(crate) student_id: String,
     pub(crate) variant_seed: i32,
@@ -102,6 +160,7 @@ pub(crate) struct ExamSession {
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub(crate) struct Submission {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) session_id: String,
     pub(crate) student_id: String,
     pub(crate) submitted_at: PrimitiveDateTime,
@@ -131,6 +190,7 @@ pub(crate) struct Submission {
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub(crate) struct SubmissionImage {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) submission_id: String,
     pub(crate) filename: String,
     pub(crate) file_path: String,
@@ -148,6 +208,7 @@ pub(crate) struct SubmissionImage {
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub(crate) struct SubmissionScore {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) submission_id: String,
     pub(crate) task_type_id: String,
     pub(crate) criterion_name: String,

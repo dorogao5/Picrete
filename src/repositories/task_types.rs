@@ -6,21 +6,26 @@ use crate::db::models::{TaskType, TaskVariant};
 use crate::db::types::DifficultyLevel;
 
 pub(crate) const COLUMNS: &str = "\
-    id, exam_id, title, description, order_index, max_score, rubric, \
+    id, course_id, exam_id, title, description, order_index, max_score, rubric, \
     difficulty, taxonomy_tags, formulas, units, validation_rules, \
     created_at, updated_at";
 
 pub(crate) const VARIANT_COLUMNS: &str = "\
-    id, task_type_id, content, parameters, reference_solution, \
+    id, course_id, task_type_id, content, parameters, reference_solution, \
     reference_answer, answer_tolerance, attachments, created_at";
 
 pub(crate) async fn list_by_exam(
     pool: &PgPool,
+    course_id: &str,
     exam_id: &str,
 ) -> Result<Vec<TaskType>, sqlx::Error> {
     sqlx::query_as::<_, TaskType>(&format!(
-        "SELECT {COLUMNS} FROM task_types WHERE exam_id = $1 ORDER BY order_index"
+        "SELECT {COLUMNS}
+         FROM task_types
+         WHERE course_id = $1 AND exam_id = $2
+         ORDER BY order_index"
     ))
+    .bind(course_id)
     .bind(exam_id)
     .fetch_all(pool)
     .await
@@ -28,11 +33,15 @@ pub(crate) async fn list_by_exam(
 
 pub(crate) async fn list_variants(
     pool: &PgPool,
+    course_id: &str,
     task_type_id: &str,
 ) -> Result<Vec<TaskVariant>, sqlx::Error> {
     sqlx::query_as::<_, TaskVariant>(&format!(
-        "SELECT {VARIANT_COLUMNS} FROM task_variants WHERE task_type_id = $1"
+        "SELECT {VARIANT_COLUMNS}
+         FROM task_variants
+         WHERE course_id = $1 AND task_type_id = $2"
     ))
+    .bind(course_id)
     .bind(task_type_id)
     .fetch_all(pool)
     .await
@@ -40,6 +49,7 @@ pub(crate) async fn list_variants(
 
 pub(crate) async fn list_variants_by_task_type_ids(
     pool: &PgPool,
+    course_id: &str,
     task_type_ids: &[String],
 ) -> Result<Vec<TaskVariant>, sqlx::Error> {
     if task_type_ids.is_empty() {
@@ -47,8 +57,11 @@ pub(crate) async fn list_variants_by_task_type_ids(
     }
 
     sqlx::query_as::<_, TaskVariant>(&format!(
-        "SELECT {VARIANT_COLUMNS} FROM task_variants WHERE task_type_id = ANY($1)"
+        "SELECT {VARIANT_COLUMNS}
+         FROM task_variants
+         WHERE course_id = $1 AND task_type_id = ANY($2)"
     ))
+    .bind(course_id)
     .bind(task_type_ids)
     .fetch_all(pool)
     .await
@@ -56,6 +69,7 @@ pub(crate) async fn list_variants_by_task_type_ids(
 
 pub(crate) struct CreateTaskType<'a> {
     pub(crate) id: &'a str,
+    pub(crate) course_id: &'a str,
     pub(crate) exam_id: &'a str,
     pub(crate) title: &'a str,
     pub(crate) description: &'a str,
@@ -77,12 +91,13 @@ pub(crate) async fn create(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO task_types (
-            id, exam_id, title, description, order_index, max_score, rubric,
+            id, course_id, exam_id, title, description, order_index, max_score, rubric,
             difficulty, taxonomy_tags, formulas, units, validation_rules,
             created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
     )
     .bind(params.id)
+    .bind(params.course_id)
     .bind(params.exam_id)
     .bind(params.title)
     .bind(params.description)
@@ -103,6 +118,7 @@ pub(crate) async fn create(
 
 pub(crate) struct CreateTaskVariant<'a> {
     pub(crate) id: &'a str,
+    pub(crate) course_id: &'a str,
     pub(crate) task_type_id: &'a str,
     pub(crate) content: &'a str,
     pub(crate) parameters: serde_json::Value,
@@ -119,11 +135,12 @@ pub(crate) async fn create_variant(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO task_variants (
-            id, task_type_id, content, parameters, reference_solution,
+            id, course_id, task_type_id, content, parameters, reference_solution,
             reference_answer, answer_tolerance, attachments, created_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
     )
     .bind(params.id)
+    .bind(params.course_id)
     .bind(params.task_type_id)
     .bind(params.content)
     .bind(SqlxJson(params.parameters))

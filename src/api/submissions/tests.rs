@@ -17,20 +17,23 @@ mod teacher_flows;
 /// Returns (submission_id, image_id).
 pub(super) async fn insert_submission_with_one_image(
     pool: &sqlx::PgPool,
+    course_id: &str,
     session_id: &str,
     student_id: &str,
     exam_id: &str,
 ) -> (String, String) {
     let max_score =
-        repositories::exams::max_score_for_exam(pool, exam_id).await.expect("max_score");
+        repositories::exams::max_score_for_exam(pool, course_id, exam_id).await.expect("max_score");
     let now =
         PrimitiveDateTime::new(OffsetDateTime::now_utc().date(), OffsetDateTime::now_utc().time());
     let submission_id = Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO submissions (id, session_id, student_id, submitted_at, status, max_score, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+        "INSERT INTO submissions (
+            id, course_id, session_id, student_id, submitted_at, status, max_score, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
     )
     .bind(&submission_id)
+    .bind(course_id)
     .bind(session_id)
     .bind(student_id)
     .bind(now)
@@ -45,10 +48,12 @@ pub(super) async fn insert_submission_with_one_image(
     let image_id = Uuid::new_v4().to_string();
     let file_path = format!("submissions/{session_id}/{image_id}_image.png");
     sqlx::query(
-        "INSERT INTO submission_images (id, submission_id, filename, file_path, file_size, mime_type, order_index, is_processed, uploaded_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        "INSERT INTO submission_images (
+            id, course_id, submission_id, filename, file_path, file_size, mime_type, order_index, is_processed, uploaded_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
     )
     .bind(&image_id)
+    .bind(course_id)
     .bind(&submission_id)
     .bind("image.png")
     .bind(&file_path)
@@ -108,12 +113,16 @@ pub(super) fn exam_payload() -> serde_json::Value {
     })
 }
 
-pub(super) async fn create_published_exam(app: axum::Router, token: &str) -> String {
+pub(super) async fn create_published_exam(
+    app: axum::Router,
+    token: &str,
+    course_id: &str,
+) -> String {
     let response = app
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            "/api/v1/exams",
+            &format!("/api/v1/courses/{course_id}/exams"),
             Some(token),
             Some(exam_payload()),
         ))
@@ -128,7 +137,7 @@ pub(super) async fn create_published_exam(app: axum::Router, token: &str) -> Str
     let response = app
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/exams/{exam_id}/publish"),
+            &format!("/api/v1/courses/{course_id}/exams/{exam_id}/publish"),
             Some(token),
             None,
         ))
@@ -143,16 +152,21 @@ pub(super) async fn create_published_exam(app: axum::Router, token: &str) -> Str
 
 pub(super) async fn signup_student(
     app: axum::Router,
-    isu: &str,
+    username: &str,
     full_name: &str,
     password: &str,
+    invite_code: Option<&str>,
 ) -> (String, String) {
-    let payload = json!({
-        "isu": isu,
+    let mut payload = json!({
+        "username": username,
         "full_name": full_name,
         "password": password,
         "pd_consent": true
     });
+    if let Some(invite_code) = invite_code {
+        payload["invite_code"] = json!(invite_code);
+        payload["identity_payload"] = json!({});
+    }
 
     let response = app
         .oneshot(test_support::json_request(
@@ -173,9 +187,9 @@ pub(super) async fn signup_student(
     (token, user_id)
 }
 
-pub(super) async fn login_student(app: axum::Router, isu: &str, password: &str) -> String {
+pub(super) async fn login_student(app: axum::Router, username: &str, password: &str) -> String {
     let payload = json!({
-        "isu": isu,
+        "username": username,
         "password": password
     });
 

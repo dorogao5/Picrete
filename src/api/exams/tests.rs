@@ -3,7 +3,7 @@ use serde_json::json;
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use tower::ServiceExt;
 
-use crate::db::types::UserRole;
+use crate::db::types::CourseRole;
 use crate::test_support;
 
 fn exam_payload() -> serde_json::Value {
@@ -54,12 +54,14 @@ fn exam_payload() -> serde_json::Value {
 async fn teacher_can_create_publish_and_list_exam() {
     let ctx = test_support::setup_test_context().await;
 
-    let teacher = test_support::insert_user(
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "teacher002", "Teacher User", "teacher-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
         ctx.state.db(),
-        "000002",
-        "Teacher User",
-        UserRole::Teacher,
-        "teacher-pass",
+        "chem-101",
+        "Chemistry 101",
+        &teacher.id,
     )
     .await;
     let token = test_support::bearer_token(&teacher.id, ctx.state.settings());
@@ -69,7 +71,7 @@ async fn teacher_can_create_publish_and_list_exam() {
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            "/api/v1/exams",
+            &format!("/api/v1/courses/{}/exams", course.id),
             Some(&token),
             Some(exam_payload()),
         ))
@@ -88,7 +90,7 @@ async fn teacher_can_create_publish_and_list_exam() {
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/exams/{exam_id}/publish"),
+            &format!("/api/v1/courses/{}/exams/{exam_id}/publish", course.id),
             Some(&token),
             None,
         ))
@@ -104,7 +106,7 @@ async fn teacher_can_create_publish_and_list_exam() {
         .app
         .oneshot(test_support::json_request(
             Method::GET,
-            "/api/v1/exams?status=published",
+            &format!("/api/v1/courses/{}/exams?status=published", course.id),
             Some(&token),
             None,
         ))
@@ -122,32 +124,44 @@ async fn teacher_can_create_publish_and_list_exam() {
 async fn teacher_cannot_access_other_teachers_exam_management_endpoints() {
     let ctx = test_support::setup_test_context().await;
 
-    let owner = test_support::insert_user(
+    let owner =
+        test_support::insert_user(ctx.state.db(), "teacher102", "Owner Teacher", "teacher-pass")
+            .await;
+    let collaborator = test_support::insert_user(
         ctx.state.db(),
-        "000102",
-        "Owner Teacher",
-        UserRole::Teacher,
+        "teacher103",
+        "Collaborator Teacher",
         "teacher-pass",
     )
     .await;
-    let intruder = test_support::insert_user(
+    let outsider =
+        test_support::insert_user(ctx.state.db(), "teacher104", "Outsider Teacher", "teacher-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
         ctx.state.db(),
-        "000103",
-        "Intruder Teacher",
-        UserRole::Teacher,
-        "teacher-pass",
+        "exam-access-101",
+        "Exam Access 101",
+        &owner.id,
+    )
+    .await;
+    test_support::add_course_role(
+        ctx.state.db(),
+        &course.id,
+        &collaborator.id,
+        CourseRole::Teacher,
     )
     .await;
 
     let owner_token = test_support::bearer_token(&owner.id, ctx.state.settings());
-    let intruder_token = test_support::bearer_token(&intruder.id, ctx.state.settings());
+    let collaborator_token = test_support::bearer_token(&collaborator.id, ctx.state.settings());
+    let outsider_token = test_support::bearer_token(&outsider.id, ctx.state.settings());
 
     let response = ctx
         .app
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            "/api/v1/exams",
+            &format!("/api/v1/courses/{}/exams", course.id),
             Some(&owner_token),
             Some(exam_payload()),
         ))
@@ -186,26 +200,42 @@ async fn teacher_cannot_access_other_teachers_exam_management_endpoints() {
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/exams/{exam_id}/task-types"),
-            Some(&intruder_token),
+            &format!("/api/v1/courses/{}/exams/{exam_id}/task-types", course.id),
+            Some(&collaborator_token),
             Some(task_type_payload),
         ))
         .await
-        .expect("add task type as intruder");
+        .expect("add task type as collaborator");
     let status = response.status();
     let body = test_support::read_json(response).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "response: {body}");
+    assert_eq!(status, StatusCode::CREATED, "response: {body}");
 
     let response = ctx
         .app
+        .clone()
         .oneshot(test_support::json_request(
             Method::GET,
-            &format!("/api/v1/exams/{exam_id}/submissions"),
-            Some(&intruder_token),
+            &format!("/api/v1/courses/{}/exams/{exam_id}/submissions", course.id),
+            Some(&collaborator_token),
             None,
         ))
         .await
-        .expect("list submissions as intruder");
+        .expect("list submissions as collaborator");
+    let status = response.status();
+    let body = test_support::read_json(response).await;
+    assert_eq!(status, StatusCode::OK, "response: {body}");
+
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::GET,
+            &format!("/api/v1/courses/{}/exams/{exam_id}/submissions", course.id),
+            Some(&outsider_token),
+            None,
+        ))
+        .await
+        .expect("list submissions as outsider");
     let status = response.status();
     let body = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "response: {body}");

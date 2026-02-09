@@ -1,5 +1,5 @@
 use super::create_published_exam;
-use crate::db::types::{SubmissionStatus, UserRole};
+use crate::db::types::{CourseRole, SubmissionStatus};
 use crate::test_support;
 use axum::http::{Method, StatusCode};
 use serde_json::json;
@@ -9,34 +9,33 @@ use tower::ServiceExt;
 async fn student_auto_save_is_rate_limited() {
     let ctx = test_support::setup_test_context().await;
 
-    let teacher = test_support::insert_user(
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "teacher010", "Teacher User", "teacher-pass")
+            .await;
+    let student =
+        test_support::insert_user(ctx.state.db(), "student011", "Student User", "student-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
         ctx.state.db(),
-        "000010",
-        "Teacher User",
-        UserRole::Teacher,
-        "teacher-pass",
+        "auto-save-101",
+        "Auto Save 101",
+        &teacher.id,
     )
     .await;
-    let student = test_support::insert_user(
-        ctx.state.db(),
-        "000011",
-        "Student User",
-        UserRole::Student,
-        "student-pass",
-    )
-    .await;
+    test_support::add_course_role(ctx.state.db(), &course.id, &student.id, CourseRole::Student)
+        .await;
 
     let teacher_token = test_support::bearer_token(&teacher.id, ctx.state.settings());
     let student_token = test_support::bearer_token(&student.id, ctx.state.settings());
 
-    let exam_id = create_published_exam(ctx.app.clone(), &teacher_token).await;
+    let exam_id = create_published_exam(ctx.app.clone(), &teacher_token, &course.id).await;
 
     let response = ctx
         .app
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/exams/{exam_id}/enter"),
+            &format!("/api/v1/courses/{}/submissions/exams/{exam_id}/enter", course.id),
             Some(&student_token),
             None,
         ))
@@ -54,7 +53,7 @@ async fn student_auto_save_is_rate_limited() {
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/sessions/{session_id}/auto-save"),
+            &format!("/api/v1/courses/{}/submissions/sessions/{session_id}/auto-save", course.id),
             Some(&student_token),
             Some(payload.clone()),
         ))
@@ -70,7 +69,7 @@ async fn student_auto_save_is_rate_limited() {
         .app
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/sessions/{session_id}/auto-save"),
+            &format!("/api/v1/courses/{}/submissions/sessions/{session_id}/auto-save", course.id),
             Some(&student_token),
             Some(payload),
         ))
@@ -87,34 +86,33 @@ async fn student_auto_save_is_rate_limited() {
 async fn student_can_submit_exam() {
     let ctx = test_support::setup_test_context().await;
 
-    let teacher = test_support::insert_user(
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "teacher020", "Teacher User", "teacher-pass")
+            .await;
+    let student =
+        test_support::insert_user(ctx.state.db(), "student021", "Student User", "student-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
         ctx.state.db(),
-        "000020",
-        "Teacher User",
-        UserRole::Teacher,
-        "teacher-pass",
+        "submit-101",
+        "Submit 101",
+        &teacher.id,
     )
     .await;
-    let student = test_support::insert_user(
-        ctx.state.db(),
-        "000021",
-        "Student User",
-        UserRole::Student,
-        "student-pass",
-    )
-    .await;
+    test_support::add_course_role(ctx.state.db(), &course.id, &student.id, CourseRole::Student)
+        .await;
 
     let teacher_token = test_support::bearer_token(&teacher.id, ctx.state.settings());
     let student_token = test_support::bearer_token(&student.id, ctx.state.settings());
 
-    let exam_id = create_published_exam(ctx.app.clone(), &teacher_token).await;
+    let exam_id = create_published_exam(ctx.app.clone(), &teacher_token, &course.id).await;
 
     let response = ctx
         .app
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/exams/{exam_id}/enter"),
+            &format!("/api/v1/courses/{}/submissions/exams/{exam_id}/enter", course.id),
             Some(&student_token),
             None,
         ))
@@ -130,7 +128,7 @@ async fn student_can_submit_exam() {
         .app
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/sessions/{session_id}/submit"),
+            &format!("/api/v1/courses/{}/submissions/sessions/{session_id}/submit", course.id),
             Some(&student_token),
             None,
         ))
@@ -148,33 +146,32 @@ async fn student_can_submit_exam() {
 async fn submit_exam_does_not_downgrade_processing_submission() {
     let ctx = test_support::setup_test_context().await;
 
-    let teacher = test_support::insert_user(
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "teacher024", "Teacher User", "teacher-pass")
+            .await;
+    let student =
+        test_support::insert_user(ctx.state.db(), "student025", "Student User", "student-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
         ctx.state.db(),
-        "000024",
-        "Teacher User",
-        UserRole::Teacher,
-        "teacher-pass",
+        "processing-101",
+        "Processing 101",
+        &teacher.id,
     )
     .await;
-    let student = test_support::insert_user(
-        ctx.state.db(),
-        "000025",
-        "Student User",
-        UserRole::Student,
-        "student-pass",
-    )
-    .await;
+    test_support::add_course_role(ctx.state.db(), &course.id, &student.id, CourseRole::Student)
+        .await;
 
     let teacher_token = test_support::bearer_token(&teacher.id, ctx.state.settings());
     let student_token = test_support::bearer_token(&student.id, ctx.state.settings());
-    let exam_id = create_published_exam(ctx.app.clone(), &teacher_token).await;
+    let exam_id = create_published_exam(ctx.app.clone(), &teacher_token, &course.id).await;
 
     let response = ctx
         .app
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/exams/{exam_id}/enter"),
+            &format!("/api/v1/courses/{}/submissions/exams/{exam_id}/enter", course.id),
             Some(&student_token),
             None,
         ))
@@ -190,7 +187,7 @@ async fn submit_exam_does_not_downgrade_processing_submission() {
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/sessions/{session_id}/submit"),
+            &format!("/api/v1/courses/{}/submissions/sessions/{session_id}/submit", course.id),
             Some(&student_token),
             None,
         ))
@@ -200,8 +197,9 @@ async fn submit_exam_does_not_downgrade_processing_submission() {
     let first_submission = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::OK, "response: {first_submission}");
 
-    sqlx::query("UPDATE submissions SET status = $1 WHERE session_id = $2")
+    sqlx::query("UPDATE submissions SET status = $1 WHERE course_id = $2 AND session_id = $3")
         .bind(SubmissionStatus::Processing)
+        .bind(&course.id)
         .bind(&session_id)
         .execute(ctx.state.db())
         .await
@@ -211,7 +209,7 @@ async fn submit_exam_does_not_downgrade_processing_submission() {
         .app
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/sessions/{session_id}/submit"),
+            &format!("/api/v1/courses/{}/submissions/sessions/{session_id}/submit", course.id),
             Some(&student_token),
             None,
         ))

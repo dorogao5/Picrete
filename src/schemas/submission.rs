@@ -7,6 +7,7 @@ use crate::db::types::{SessionStatus, SubmissionStatus};
 #[derive(Debug, Serialize)]
 pub(crate) struct ExamSessionResponse {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) exam_id: String,
     pub(crate) student_id: String,
     pub(crate) variant_seed: i32,
@@ -21,6 +22,7 @@ pub(crate) struct ExamSessionResponse {
 #[derive(Debug, Serialize)]
 pub(crate) struct SubmissionImageResponse {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) filename: String,
     pub(crate) order_index: i32,
     pub(crate) file_size: i64,
@@ -33,6 +35,7 @@ pub(crate) struct SubmissionImageResponse {
 #[derive(Debug, Serialize)]
 pub(crate) struct SubmissionScoreResponse {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) submission_id: String,
     pub(crate) task_type_id: String,
     pub(crate) criterion_name: String,
@@ -47,6 +50,7 @@ pub(crate) struct SubmissionScoreResponse {
 #[derive(Debug, Serialize)]
 pub(crate) struct SubmissionResponse {
     pub(crate) id: String,
+    pub(crate) course_id: String,
     pub(crate) session_id: String,
     pub(crate) student_id: String,
     pub(crate) submitted_at: String,

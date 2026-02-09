@@ -3,20 +3,23 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::api::errors::ApiError;
-use crate::api::guards::CurrentTeacher;
+use crate::api::guards::{require_course_role, CurrentUser};
 use crate::core::state::AppState;
 use crate::core::time::{primitive_now_utc, to_primitive_utc};
-use crate::db::types::ExamStatus;
+use crate::db::types::{CourseRole, ExamStatus};
 use crate::repositories;
 use crate::schemas::exam::{ExamCreate, ExamResponse, TaskTypeCreate};
 
 use super::super::helpers;
 
 pub(in crate::api::exams) async fn create_exam(
-    CurrentTeacher(teacher): CurrentTeacher,
+    axum::extract::Path(course_id): axum::extract::Path<String>,
+    CurrentUser(user): CurrentUser,
     state: axum::extract::State<AppState>,
     Json(payload): Json<ExamCreate>,
 ) -> Result<(axum::http::StatusCode, Json<ExamResponse>), ApiError> {
+    require_course_role(&state, &user, &course_id, CourseRole::Teacher).await?;
+
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     if payload.end_time <= payload.start_time {
@@ -38,6 +41,7 @@ pub(in crate::api::exams) async fn create_exam(
         &mut *tx,
         repositories::exams::CreateExam {
             id: &exam_id,
+            course_id: &course_id,
             title: &payload.title,
             description: payload.description.as_deref(),
             start_time,
@@ -49,7 +53,7 @@ pub(in crate::api::exams) async fn create_exam(
             break_duration_minutes: payload.break_duration_minutes,
             auto_save_interval: payload.auto_save_interval,
             status: ExamStatus::Draft,
-            created_by: &teacher.id,
+            created_by: &user.id,
             created_at: now,
             updated_at: now,
             settings: payload.settings.clone(),
@@ -58,31 +62,30 @@ pub(in crate::api::exams) async fn create_exam(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to create exam"))?;
 
-    let task_types = helpers::insert_task_types(&mut tx, &exam.id, payload.task_types).await?;
+    let task_types =
+        helpers::insert_task_types(&mut tx, &course_id, &exam.id, payload.task_types).await?;
     tx.commit().await.map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
 
     Ok((axum::http::StatusCode::CREATED, Json(helpers::exam_to_response(exam, task_types))))
 }
 
 pub(in crate::api::exams) async fn add_task_type(
-    axum::extract::Path(exam_id): axum::extract::Path<String>,
-    CurrentTeacher(teacher): CurrentTeacher,
+    axum::extract::Path((course_id, exam_id)): axum::extract::Path<(String, String)>,
+    CurrentUser(user): CurrentUser,
     state: axum::extract::State<AppState>,
     Json(payload): Json<TaskTypeCreate>,
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), ApiError> {
+    require_course_role(&state, &user, &course_id, CourseRole::Teacher).await?;
+
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let exam = repositories::exams::find_by_id(state.db(), &exam_id)
+    let exam = repositories::exams::find_by_id(state.db(), &course_id, &exam_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch exam"))?;
 
-    let Some(exam) = exam else {
+    let Some(_exam) = exam else {
         return Err(ApiError::NotFound("Exam not found".to_string()));
     };
-
-    if !helpers::can_manage_exam(&teacher, &exam) {
-        return Err(ApiError::Forbidden("You can only add task types to your own exams"));
-    }
 
     let mut tx = state
         .db()
@@ -111,6 +114,7 @@ pub(in crate::api::exams) async fn add_task_type(
         &mut *tx,
         repositories::task_types::CreateTaskType {
             id: &task_type_id,
+            course_id: &course_id,
             exam_id: &exam_id,
             title: &title,
             description: &description,
@@ -129,7 +133,7 @@ pub(in crate::api::exams) async fn add_task_type(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to create task type"))?;
 
-    helpers::insert_variants(&mut tx, &task_type_id, variants).await?;
+    helpers::insert_variants(&mut tx, &course_id, &task_type_id, variants).await?;
     tx.commit().await.map_err(|e| ApiError::internal(e, "Failed to commit transaction"))?;
 
     Ok((

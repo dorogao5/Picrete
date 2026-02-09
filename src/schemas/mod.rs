@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 pub(crate) mod auth;
+pub(crate) mod course;
 pub(crate) mod exam;
 pub(crate) mod submission;
 pub(crate) mod user;

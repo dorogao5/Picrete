@@ -4,7 +4,6 @@ use uuid::Uuid;
 use crate::core::security;
 use crate::core::state::AppState;
 use crate::core::time::primitive_now_utc;
-use crate::db::types::UserRole;
 use crate::repositories;
 
 pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
@@ -14,9 +13,9 @@ pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let isu = &admin.first_superuser_isu;
+    let username = &admin.first_superuser_username;
 
-    let user = repositories::users::find_by_isu(state.db(), isu).await?;
+    let user = repositories::users::find_by_username(state.db(), username).await?;
 
     let now_primitive = primitive_now_utc();
 
@@ -33,9 +32,9 @@ pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
             Some(security::hash_password(&admin.first_superuser_password)?)
         };
 
-        let role = if user.role != UserRole::Admin {
+        let is_platform_admin = if !user.is_platform_admin {
             needs_update = true;
-            Some(UserRole::Admin)
+            Some(true)
         } else {
             None
         };
@@ -60,7 +59,7 @@ pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
                 &user.id,
                 repositories::users::UpdateUser {
                     full_name: None,
-                    role,
+                    is_platform_admin,
                     is_active,
                     is_verified,
                     hashed_password,
@@ -69,7 +68,7 @@ pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
             )
             .await?;
 
-            tracing::info!("Updated default superuser {isu}");
+            tracing::info!("Updated default superuser {username}");
         } else {
             tracing::info!("Default superuser already up to date");
         }
@@ -84,10 +83,10 @@ pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
         state.db(),
         repositories::users::CreateUser {
             id: &user_id,
-            isu,
+            username,
             hashed_password,
             full_name: "Super Admin",
-            role: UserRole::Admin,
+            is_platform_admin: true,
             is_active: true,
             is_verified: true,
             pd_consent: false,
@@ -102,6 +101,6 @@ pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
     )
     .await?;
 
-    tracing::info!("Created default superuser {isu}");
+    tracing::info!("Created default superuser {username}");
     Ok(())
 }

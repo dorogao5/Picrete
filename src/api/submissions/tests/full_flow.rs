@@ -1,5 +1,5 @@
 use super::{create_published_exam, login_student, signup_student};
-use crate::db::types::UserRole;
+use crate::db::types::CourseRole;
 use crate::test_support;
 use axum::http::{Method, StatusCode};
 use serde_json::json;
@@ -9,29 +9,39 @@ use tower::ServiceExt;
 async fn full_flow_signup_login_submit_and_approve() {
     let ctx = test_support::setup_test_context_with_storage().await;
 
-    let teacher = test_support::insert_user(
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "teacher040", "Teacher User", "teacher-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
         ctx.state.db(),
-        "000040",
-        "Teacher User",
-        UserRole::Teacher,
-        "teacher-pass",
+        "full-flow-101",
+        "Full Flow 101",
+        &teacher.id,
     )
     .await;
+    let student_invite =
+        test_support::create_active_invite_code(ctx.state.db(), &course, CourseRole::Student).await;
     let teacher_token = test_support::bearer_token(&teacher.id, ctx.state.settings());
 
-    let (student_token, _student_id) =
-        signup_student(ctx.app.clone(), "000041", "Student User", "student-pass").await;
-    let login_token = login_student(ctx.app.clone(), "000041", "student-pass").await;
+    let (student_token, _student_id) = signup_student(
+        ctx.app.clone(),
+        "student041",
+        "Student User",
+        "student-pass",
+        Some(&student_invite),
+    )
+    .await;
+    let login_token = login_student(ctx.app.clone(), "student041", "student-pass").await;
     assert!(!login_token.is_empty());
 
-    let exam_id = create_published_exam(ctx.app.clone(), &teacher_token).await;
+    let exam_id = create_published_exam(ctx.app.clone(), &teacher_token, &course.id).await;
 
     let response = ctx
         .app
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/exams/{exam_id}/enter"),
+            &format!("/api/v1/courses/{}/submissions/exams/{exam_id}/enter", course.id),
             Some(&student_token),
             None,
         ))
@@ -48,7 +58,10 @@ async fn full_flow_signup_login_submit_and_approve() {
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/sessions/{session_id}/presigned-upload-url?filename=work.png&content_type=image/png"),
+            &format!(
+                "/api/v1/courses/{}/submissions/sessions/{session_id}/presigned-upload-url?filename=work.png&content_type=image/png",
+                course.id
+            ),
             Some(&student_token),
             None,
         ))
@@ -65,7 +78,7 @@ async fn full_flow_signup_login_submit_and_approve() {
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/sessions/{session_id}/submit"),
+            &format!("/api/v1/courses/{}/submissions/sessions/{session_id}/submit", course.id),
             Some(&student_token),
             None,
         ))
@@ -82,7 +95,7 @@ async fn full_flow_signup_login_submit_and_approve() {
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/{submission_id}/regrade"),
+            &format!("/api/v1/courses/{}/submissions/{submission_id}/regrade", course.id),
             Some(&teacher_token),
             None,
         ))
@@ -101,7 +114,7 @@ async fn full_flow_signup_login_submit_and_approve() {
         .clone()
         .oneshot(test_support::json_request(
             Method::POST,
-            &format!("/api/v1/submissions/{submission_id}/override-score"),
+            &format!("/api/v1/courses/{}/submissions/{submission_id}/override-score", course.id),
             Some(&teacher_token),
             Some(json!({"final_score": 8.5, "teacher_comments": "Looks good"})),
         ))
@@ -116,7 +129,7 @@ async fn full_flow_signup_login_submit_and_approve() {
         .app
         .oneshot(test_support::json_request(
             Method::GET,
-            &format!("/api/v1/submissions/{submission_id}"),
+            &format!("/api/v1/courses/{}/submissions/{submission_id}", course.id),
             Some(&teacher_token),
             None,
         ))

@@ -21,6 +21,7 @@ pub(crate) async fn process_completed_exams(state: &AppState) -> Result<()> {
     for exam in &exams {
         let queued_ids = repositories::submissions::queue_uploaded_for_processing_by_exam(
             state.db(),
+            &exam.course_id,
             &exam.id,
             now,
         )
@@ -28,7 +29,7 @@ pub(crate) async fn process_completed_exams(state: &AppState) -> Result<()> {
         .context("Failed to queue submissions for processing")?;
         queued += queued_ids.len();
 
-        repositories::exams::mark_completed(state.db(), &exam.id, now)
+        repositories::exams::mark_completed(state.db(), &exam.course_id, &exam.id, now)
             .await
             .context("Failed to mark exam as completed")?;
     }
@@ -70,6 +71,7 @@ pub(crate) async fn close_expired_sessions(state: &AppState) -> Result<()> {
 
         repositories::sessions::expire_with_deadline(
             state.db(),
+            &session.course_id,
             &session.id,
             hard_deadline,
             now_primitive(),
@@ -94,10 +96,11 @@ pub(crate) async fn retry_failed_submissions(state: &AppState) -> Result<()> {
     let mut retried = 0;
     let now = now_primitive();
 
-    for submission_id in submissions {
-        let updated = repositories::submissions::requeue_failed(state.db(), &submission_id, now)
-            .await
-            .context("Failed to requeue failed submission")?;
+    for (submission_id, course_id) in submissions {
+        let updated =
+            repositories::submissions::requeue_failed(state.db(), &course_id, &submission_id, now)
+                .await
+                .context("Failed to requeue failed submission")?;
 
         if updated {
             retried += 1;
