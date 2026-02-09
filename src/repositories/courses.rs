@@ -59,6 +59,12 @@ pub(crate) async fn fetch_one_by_id(pool: &PgPool, course_id: &str) -> Result<Co
         .await
 }
 
+pub(crate) async fn delete(pool: &PgPool, course_id: &str) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("DELETE FROM courses WHERE id = $1").bind(course_id).execute(pool).await?;
+    Ok(result.rows_affected() > 0)
+}
+
 pub(crate) async fn update(
     pool: &PgPool,
     course_id: &str,

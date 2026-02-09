@@ -153,3 +153,70 @@ async fn inactive_user_token_is_rejected_by_guard() {
     let body = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "response: {body}");
 }
+
+#[tokio::test]
+async fn admin_can_delete_user() {
+    let ctx = test_support::setup_test_context().await;
+
+    let admin =
+        test_support::insert_platform_admin(ctx.state.db(), "admin700", "Admin User", "admin-pass")
+            .await;
+    let token = test_support::bearer_token(&admin.id, ctx.state.settings());
+
+    let target =
+        test_support::insert_user(ctx.state.db(), "student700", "Delete Target", "student-pass")
+            .await;
+
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::DELETE,
+            &format!("/api/v1/users/{}", target.id),
+            Some(&token),
+            None,
+        ))
+        .await
+        .expect("delete user");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = ctx
+        .app
+        .oneshot(test_support::json_request(
+            Method::GET,
+            &format!("/api/v1/users/{}", target.id),
+            Some(&token),
+            None,
+        ))
+        .await
+        .expect("get deleted user");
+
+    let status = response.status();
+    let body = test_support::read_json(response).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "response: {body}");
+}
+
+#[tokio::test]
+async fn admin_cannot_delete_self() {
+    let ctx = test_support::setup_test_context().await;
+
+    let admin =
+        test_support::insert_platform_admin(ctx.state.db(), "admin701", "Admin User", "admin-pass")
+            .await;
+    let token = test_support::bearer_token(&admin.id, ctx.state.settings());
+
+    let response = ctx
+        .app
+        .oneshot(test_support::json_request(
+            Method::DELETE,
+            &format!("/api/v1/users/{}", admin.id),
+            Some(&token),
+            None,
+        ))
+        .await
+        .expect("delete self");
+
+    let status = response.status();
+    let body = test_support::read_json(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "response: {body}");
+}

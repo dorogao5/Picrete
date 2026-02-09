@@ -35,7 +35,7 @@ pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/me", get(me))
         .route("/", get(list_users).post(create_user))
-        .route("/:user_id", get(get_user).patch(update_user))
+        .route("/:user_id", get(get_user).patch(update_user).delete(delete_user))
 }
 
 async fn me(CurrentUser(user): CurrentUser) -> Json<UserResponse> {
@@ -194,6 +194,73 @@ async fn update_user(
     );
 
     Ok(Json(UserResponse::from_db(updated)))
+}
+
+async fn delete_user(
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+    CurrentAdmin(admin): CurrentAdmin,
+    state: axum::extract::State<AppState>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    let user = repositories::users::find_by_id(state.db(), &user_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch user"))?;
+
+    let Some(user) = user else {
+        return Err(ApiError::NotFound("User not found".to_string()));
+    };
+
+    if user.id == admin.id {
+        return Err(ApiError::BadRequest("Cannot delete your own account".to_string()));
+    }
+
+    if user.is_platform_admin {
+        let admin_count = repositories::users::count(
+            state.db(),
+            repositories::users::UserListFilters {
+                username: None,
+                is_platform_admin: Some(true),
+                is_active: None,
+                is_verified: None,
+            },
+        )
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to count platform admins"))?;
+
+        if admin_count <= 1 {
+            return Err(ApiError::Conflict("Cannot delete the last platform admin".to_string()));
+        }
+    }
+
+    let deleted = repositories::users::delete(state.db(), &user_id).await.map_err(|e| {
+        if is_foreign_key_violation(&e) {
+            ApiError::Conflict(
+                "Cannot delete user with dependent records. Delete owned courses first."
+                    .to_string(),
+            )
+        } else {
+            ApiError::internal(e, "Failed to delete user")
+        }
+    })?;
+
+    if !deleted {
+        return Err(ApiError::NotFound("User not found".to_string()));
+    }
+
+    tracing::info!(
+        admin_id = %admin.id,
+        user_id = %user_id,
+        action = "user_delete",
+        "Admin deleted user"
+    );
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+fn is_foreign_key_violation(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::Database(db_error) => db_error.code().as_deref() == Some("23503"),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

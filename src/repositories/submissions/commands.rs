@@ -359,11 +359,17 @@ mod tests {
         let ctx = test_support::setup_test_context().await;
         let db = ctx.state.db();
 
-        let teacher = test_support::insert_user(db, "teacher_claim", "Teacher", "Password123").await;
-        let student = test_support::insert_user(db, "student_claim", "Student", "Password123").await;
-        let course =
-            test_support::create_course_with_teacher(db, "claim-course", "Claim Course", &teacher.id)
-                .await;
+        let teacher =
+            test_support::insert_user(db, "teacher_claim", "Teacher", "Password123").await;
+        let student =
+            test_support::insert_user(db, "student_claim", "Student", "Password123").await;
+        let course = test_support::create_course_with_teacher(
+            db,
+            "claim-course",
+            "Claim Course",
+            &teacher.id,
+        )
+        .await;
         test_support::add_course_role(db, &course.id, &student.id, CourseRole::Student).await;
 
         let now = primitive_now_utc();

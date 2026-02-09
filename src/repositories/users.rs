@@ -152,6 +152,11 @@ pub(crate) async fn fetch_one_by_id(pool: &PgPool, id: &str) -> Result<User, sql
         .await
 }
 
+pub(crate) async fn delete(pool: &PgPool, id: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM users WHERE id = $1").bind(id).execute(pool).await?;
+    Ok(result.rows_affected() > 0)
+}
+
 fn apply_filters<'a>(builder: &mut QueryBuilder<'a, Postgres>, filters: UserListFilters<'a>) {
     let mut has_where = false;
 

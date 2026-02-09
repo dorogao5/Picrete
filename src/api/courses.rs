@@ -17,7 +17,7 @@ use crate::services::{invite_codes, membership_policy};
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_courses).post(create_course))
-        .route("/:course_id", axum::routing::patch(update_course))
+        .route("/:course_id", axum::routing::patch(update_course).delete(delete_course))
         .route("/:course_id/invite-codes/rotate", axum::routing::post(rotate_invite_code))
         .route("/:course_id/identity-policy", axum::routing::patch(update_identity_policy))
         .route("/join", axum::routing::post(join_course))
@@ -121,6 +121,41 @@ async fn update_course(
         .map_err(|e| ApiError::internal(e, "Failed to fetch updated course"))?;
 
     Ok(Json(CourseResponse::from_db(updated)))
+}
+
+async fn delete_course(
+    axum::extract::Path(course_id): axum::extract::Path<String>,
+    CurrentAdmin(admin): CurrentAdmin,
+    state: axum::extract::State<AppState>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    let course = repositories::courses::find_by_id(state.db(), &course_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch course"))?;
+
+    if course.is_none() {
+        return Err(ApiError::NotFound("Course not found".to_string()));
+    }
+
+    let deleted = repositories::courses::delete(state.db(), &course_id).await.map_err(|e| {
+        if is_foreign_key_violation(&e) {
+            ApiError::Conflict("Cannot delete course due dependent records".to_string())
+        } else {
+            ApiError::internal(e, "Failed to delete course")
+        }
+    })?;
+
+    if !deleted {
+        return Err(ApiError::NotFound("Course not found".to_string()));
+    }
+
+    tracing::info!(
+        admin_id = %admin.id,
+        course_id = %course_id,
+        action = "course_delete",
+        "Admin deleted course"
+    );
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 async fn rotate_invite_code(
@@ -285,3 +320,13 @@ async fn join_course(
         },
     }))
 }
+
+fn is_foreign_key_violation(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::Database(db_error) => db_error.code().as_deref() == Some("23503"),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests;
