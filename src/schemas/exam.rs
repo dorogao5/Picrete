@@ -122,6 +122,10 @@ pub(crate) struct ExamCreate {
     #[serde(alias = "autoSaveInterval")]
     #[validate(range(min = 1, message = "auto_save_interval must be positive"))]
     pub(crate) auto_save_interval: i32,
+    #[serde(default = "default_enabled_true", alias = "ocrEnabled")]
+    pub(crate) ocr_enabled: bool,
+    #[serde(default = "default_enabled_true", alias = "llmPrecheckEnabled")]
+    pub(crate) llm_precheck_enabled: bool,
     #[serde(default)]
     pub(crate) settings: serde_json::Value,
     #[serde(default)]
@@ -153,6 +157,10 @@ pub(crate) struct ExamUpdate {
     #[serde(alias = "durationMinutes")]
     #[validate(range(min = 1, message = "duration_minutes must be positive"))]
     pub(crate) duration_minutes: Option<i32>,
+    #[serde(default, alias = "ocrEnabled")]
+    pub(crate) ocr_enabled: Option<bool>,
+    #[serde(default, alias = "llmPrecheckEnabled")]
+    pub(crate) llm_precheck_enabled: Option<bool>,
     #[serde(default)]
     pub(crate) settings: Option<serde_json::Value>,
 }
@@ -171,6 +179,8 @@ pub(crate) struct ExamResponse {
     pub(crate) allow_breaks: bool,
     pub(crate) break_duration_minutes: i32,
     pub(crate) auto_save_interval: i32,
+    pub(crate) ocr_enabled: bool,
+    pub(crate) llm_precheck_enabled: bool,
     pub(crate) settings: serde_json::Value,
     pub(crate) status: ExamStatus,
     pub(crate) created_by: Option<String>,
@@ -212,6 +222,10 @@ fn default_max_attempts() -> i32 {
 
 fn default_auto_save_interval() -> i32 {
     10
+}
+
+fn default_enabled_true() -> bool {
+    true
 }
 
 fn parse_offset_datetime_flexible(raw: &str) -> Option<OffsetDateTime> {

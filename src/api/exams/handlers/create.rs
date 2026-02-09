@@ -9,6 +9,7 @@ use crate::core::time::{primitive_now_utc, to_primitive_utc};
 use crate::db::types::{CourseRole, ExamStatus};
 use crate::repositories;
 use crate::schemas::exam::{ExamCreate, ExamResponse, TaskTypeCreate};
+use crate::services::work_processing::WorkProcessingSettings;
 
 use super::super::helpers;
 
@@ -28,6 +29,13 @@ pub(in crate::api::exams) async fn create_exam(
 
     let start_time = to_primitive_utc(payload.start_time);
     let end_time = to_primitive_utc(payload.end_time);
+    let processing = WorkProcessingSettings {
+        ocr_enabled: payload.ocr_enabled,
+        llm_precheck_enabled: payload.llm_precheck_enabled,
+    }
+    .validate()
+    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let settings = processing.merge_into_exam_settings(payload.settings.clone());
 
     let now = primitive_now_utc();
     let mut tx = state
@@ -56,7 +64,7 @@ pub(in crate::api::exams) async fn create_exam(
             created_by: &user.id,
             created_at: now,
             updated_at: now,
-            settings: payload.settings.clone(),
+            settings,
         },
     )
     .await

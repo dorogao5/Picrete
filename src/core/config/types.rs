@@ -10,6 +10,7 @@ pub(crate) struct Settings {
     pub(super) database: DatabaseSettings,
     pub(super) redis: RedisSettings,
     pub(super) ai: AiSettings,
+    pub(super) datalab: DatalabSettings,
     pub(super) storage: StorageSettings,
     pub(super) s3: S3Settings,
     pub(super) exam: ExamSettings,
@@ -71,6 +72,18 @@ pub(crate) struct AiSettings {
     pub(crate) ai_model: String,
     pub(crate) ai_max_tokens: u32,
     pub(crate) ai_request_timeout: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DatalabSettings {
+    pub(crate) api_key: String,
+    pub(crate) base_url: String,
+    pub(crate) mode: String,
+    pub(crate) output_format: String,
+    pub(crate) timeout_seconds: u64,
+    pub(crate) poll_interval_seconds: u64,
+    pub(crate) max_poll_attempts: u32,
+    pub(crate) max_submit_retries: u32,
 }
 
 #[derive(Debug, Clone)]

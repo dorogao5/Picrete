@@ -34,6 +34,9 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/sessions/:session_id/upload", post(student::upload_image))
         .route("/sessions/:session_id/auto-save", post(student::auto_save))
         .route("/sessions/:session_id/submit", post(student::submit_exam))
+        .route("/sessions/:session_id/ocr-pages", get(student::get_ocr_pages))
+        .route("/sessions/:session_id/ocr-pages/:image_id/review", post(student::review_ocr_page))
+        .route("/sessions/:session_id/ocr/finalize", post(student::finalize_ocr_review))
         .route("/sessions/:session_id/result", get(student::get_session_result))
         // Teacher endpoints
         .route("/:submission_id", get(teacher::get_submission))

@@ -4,21 +4,29 @@ use tokio::time::{interval, sleep, Duration};
 
 use crate::core::state::AppState;
 use crate::services::ai_grading::AiGradingService;
+use crate::services::datalab_ocr::DatalabOcrService;
 use crate::tasks::grading;
 
-const GRADING_WORKER_CONCURRENCY: usize = 4;
+const OCR_WORKER_CONCURRENCY: usize = 3;
+const LLM_WORKER_CONCURRENCY: usize = 3;
 
 pub(crate) async fn run(state: AppState) -> Result<()> {
     let ai = AiGradingService::from_settings(state.settings())?;
+    let datalab = DatalabOcrService::from_settings(state.settings())?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let mut handles = Vec::with_capacity(GRADING_WORKER_CONCURRENCY + 3);
-    for _ in 0..GRADING_WORKER_CONCURRENCY {
-        handles.push(tokio::spawn(grading_worker(state.clone(), ai.clone(), shutdown_rx.clone())));
+    let mut handles = Vec::with_capacity(OCR_WORKER_CONCURRENCY + LLM_WORKER_CONCURRENCY + 3);
+
+    for _ in 0..OCR_WORKER_CONCURRENCY {
+        handles.push(tokio::spawn(ocr_worker(state.clone(), datalab.clone(), shutdown_rx.clone())));
     }
+    for _ in 0..LLM_WORKER_CONCURRENCY {
+        handles.push(tokio::spawn(llm_worker(state.clone(), ai.clone(), shutdown_rx.clone())));
+    }
+
     handles.push(tokio::spawn(process_completed_loop(state.clone(), shutdown_rx.clone())));
     handles.push(tokio::spawn(close_expired_loop(state.clone(), shutdown_rx.clone())));
-    handles.push(tokio::spawn(retry_failed_loop(state.clone(), shutdown_rx.clone())));
+    handles.push(tokio::spawn(retry_failed_ocr_loop(state.clone(), shutdown_rx.clone())));
 
     crate::core::shutdown::shutdown_signal().await;
     if shutdown_tx.send(true).is_err() {
@@ -34,9 +42,9 @@ pub(crate) async fn run(state: AppState) -> Result<()> {
     Ok(())
 }
 
-async fn grading_worker(
+async fn ocr_worker(
     state: AppState,
-    ai: AiGradingService,
+    datalab: DatalabOcrService,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -44,27 +52,59 @@ async fn grading_worker(
             break;
         }
 
-        match grading::claim_next_submission(state.db()).await {
+        match grading::claim_next_ocr_submission(state.db()).await {
             Ok(Some((submission_id, course_id))) => {
                 if let Err(err) =
-                    grading::grade_submission(&state, &ai, &course_id, &submission_id).await
+                    grading::process_submission_ocr(&state, &datalab, &course_id, &submission_id)
+                        .await
                 {
                     tracing::error!(
                         course_id,
                         submission_id,
                         error = %err,
-                        "Failed to grade submission"
+                        "Failed to process OCR submission"
                     );
                 }
                 continue;
             }
             Ok(None) => {}
-            Err(err) => tracing::error!(error = %err, "Failed to claim submission"),
+            Err(err) => tracing::error!(error = %err, "Failed to claim OCR submission"),
         }
 
         tokio::select! {
             _ = shutdown.changed() => break,
-            _ = sleep(Duration::from_secs(5)) => {}
+            _ = sleep(Duration::from_secs(2)) => {}
+        }
+    }
+}
+
+async fn llm_worker(state: AppState, ai: AiGradingService, mut shutdown: watch::Receiver<bool>) {
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+
+        match grading::claim_next_llm_submission(state.db()).await {
+            Ok(Some((submission_id, course_id))) => {
+                if let Err(err) =
+                    grading::run_llm_precheck(&state, &ai, &course_id, &submission_id).await
+                {
+                    tracing::error!(
+                        course_id,
+                        submission_id,
+                        error = %err,
+                        "Failed to run LLM precheck"
+                    );
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(err) => tracing::error!(error = %err, "Failed to claim LLM-precheck submission"),
+        }
+
+        tokio::select! {
+            _ = shutdown.changed() => break,
+            _ = sleep(Duration::from_secs(3)) => {}
         }
     }
 }
@@ -97,14 +137,17 @@ async fn close_expired_loop(state: AppState, mut shutdown: watch::Receiver<bool>
     }
 }
 
-async fn retry_failed_loop(state: AppState, mut shutdown: watch::Receiver<bool>) {
-    let mut tick = interval(Duration::from_secs(3600));
+async fn retry_failed_ocr_loop(state: AppState, mut shutdown: watch::Receiver<bool>) {
+    let mut tick = interval(Duration::from_secs(900));
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
             _ = tick.tick() => {
-                if let Err(err) = grading::retry_failed_submissions(&state).await {
-                    tracing::error!(error = %err, "retry_failed_submissions failed");
+                if let Err(err) = grading::recover_stale_processing_submissions(&state).await {
+                    tracing::error!(error = %err, "recover_stale_processing_submissions failed");
+                }
+                if let Err(err) = grading::retry_failed_ocr_submissions(&state).await {
+                    tracing::error!(error = %err, "retry_failed_ocr_submissions failed");
                 }
             }
         }

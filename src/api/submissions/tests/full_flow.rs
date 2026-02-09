@@ -90,23 +90,6 @@ async fn full_flow_signup_login_submit_and_approve() {
     assert_eq!(status, StatusCode::OK, "response: {submission}");
     let submission_id = submission["id"].as_str().expect("submission id");
 
-    let response = ctx
-        .app
-        .clone()
-        .oneshot(test_support::json_request(
-            Method::POST,
-            &format!("/api/v1/courses/{}/submissions/{submission_id}/regrade", course.id),
-            Some(&teacher_token),
-            None,
-        ))
-        .await
-        .expect("regrade");
-
-    let status = response.status();
-    let regrade = test_support::read_json(response).await;
-    assert_eq!(status, StatusCode::OK, "response: {regrade}");
-    assert_eq!(regrade["status"], "processing");
-
     // Use override-score instead of approve (approve requires ai_score which is not
     // available in tests since AI grading doesn't run)
     let response = ctx

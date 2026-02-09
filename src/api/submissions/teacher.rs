@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::{
     extract::{Path, State},
     Json,
@@ -8,11 +10,12 @@ use validator::Validate;
 use crate::api::errors::ApiError;
 use crate::api::guards::{require_course_membership, require_course_role, CurrentUser};
 use crate::core::state::AppState;
-use crate::db::types::{CourseRole, SubmissionStatus};
+use crate::db::types::{CourseRole, LlmPrecheckStatus, OcrOverallStatus, SubmissionStatus};
 use crate::repositories;
 use crate::schemas::submission::{
     format_primitive, SubmissionApproveRequest, SubmissionOverrideRequest,
 };
+use crate::services::work_processing::WorkProcessingSettings;
 
 pub(super) async fn get_submission(
     Path((course_id, submission_id)): Path<(String, String)>,
@@ -30,8 +33,26 @@ pub(super) async fn get_submission(
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
 
+    if !matches!(
+        details.status,
+        SubmissionStatus::Preliminary
+            | SubmissionStatus::Approved
+            | SubmissionStatus::Flagged
+            | SubmissionStatus::Rejected
+    ) {
+        return Err(ApiError::NotFound("Submission not found".to_string()));
+    }
+
     let images = super::helpers::fetch_images(state.db(), &course_id, &details.id).await?;
     let scores = super::helpers::fetch_scores(state.db(), &course_id, &details.id).await?;
+    let reviews =
+        repositories::ocr_reviews::list_reviews_by_submission(state.db(), &course_id, &details.id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch OCR reviews"))?;
+    let issues =
+        repositories::ocr_reviews::list_issues_by_submission(state.db(), &course_id, &details.id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch OCR issues"))?;
     let tasks_payload = super::helpers::build_task_context_from_assignments(
         state.db(),
         &course_id,
@@ -40,6 +61,45 @@ pub(super) async fn get_submission(
     )
     .await?;
 
+    let review_by_image: HashMap<String, crate::db::models::SubmissionOcrReview> =
+        reviews.into_iter().map(|review| (review.image_id.clone(), review)).collect();
+    let mut issues_by_review: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    for issue in issues {
+        issues_by_review.entry(issue.ocr_review_id.clone()).or_default().push(serde_json::json!({
+            "id": issue.id,
+            "review_id": issue.ocr_review_id,
+            "image_id": issue.image_id,
+            "anchor": issue.anchor.0,
+            "original_text": issue.original_text,
+            "suggested_text": issue.suggested_text,
+            "note": issue.note,
+            "severity": issue.severity,
+            "created_at": format_primitive(issue.created_at),
+        }));
+    }
+
+    let mut report_issues = Vec::new();
+    let mut ocr_pages = Vec::new();
+    for image in &images {
+        let (page_status, review_issues) = if let Some(review) = review_by_image.get(&image.id) {
+            let issues = issues_by_review.remove(&review.id).unwrap_or_default();
+            report_issues.extend(issues.clone());
+            (Some(review.page_status), issues)
+        } else {
+            (None, Vec::new())
+        };
+
+        ocr_pages.push(serde_json::json!({
+            "image_id": image.id,
+            "order_index": image.order_index,
+            "ocr_status": image.ocr_status,
+            "ocr_markdown": image.ocr_markdown,
+            "chunks": image.ocr_chunks,
+            "page_status": page_status,
+            "issues": review_issues,
+        }));
+    }
+
     Ok(Json(serde_json::json!({
         "id": details.id,
         "course_id": details.course_id,
@@ -47,6 +107,12 @@ pub(super) async fn get_submission(
         "student_id": details.student_id,
         "submitted_at": format_primitive(details.submitted_at),
         "status": details.status,
+        "ocr_overall_status": details.ocr_overall_status,
+        "llm_precheck_status": details.llm_precheck_status,
+        "report_flag": details.report_flag,
+        "report_summary": details.report_summary,
+        "ocr_error": details.ocr_error,
+        "llm_error": details.ai_error,
         "ai_score": details.ai_score,
         "final_score": details.final_score,
         "max_score": details.max_score,
@@ -58,6 +124,8 @@ pub(super) async fn get_submission(
         "reviewed_by": details.reviewed_by,
         "reviewed_at": details.reviewed_at.map(format_primitive),
         "images": images,
+        "ocr_pages": ocr_pages,
+        "report_issues": report_issues,
         "scores": scores,
         "student_name": details.student_name,
         "student_username": details.student_username,
@@ -205,11 +273,32 @@ pub(super) async fn regrade_submission(
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
 
-    let Some(_submission) = submission else {
+    let Some(submission) = submission else {
         return Err(ApiError::NotFound("Submission not found".to_string()));
     };
 
-    repositories::submissions::queue_regrade(
+    let session =
+        repositories::sessions::find_by_id(state.db(), &course_id, &submission.session_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch submission session"))?
+            .ok_or_else(|| {
+                ApiError::Internal("Submission session is missing for regrade".to_string())
+            })?;
+    let exam = repositories::exams::find_by_id(state.db(), &course_id, &session.exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch submission exam"))?
+        .ok_or_else(|| ApiError::Internal("Submission exam is missing for regrade".to_string()))?;
+
+    let processing = WorkProcessingSettings::from_exam_settings(&exam.settings.0)
+        .validate()
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    if !processing.llm_precheck_enabled {
+        return Err(ApiError::BadRequest(
+            "LLM precheck is disabled for this work; regrade is not available".to_string(),
+        ));
+    }
+
+    let queued = repositories::submissions::queue_regrade(
         state.db(),
         &course_id,
         &submission_id,
@@ -217,6 +306,11 @@ pub(super) async fn regrade_submission(
     )
     .await
     .map_err(|e| ApiError::internal(e, "Failed to update submission"))?;
+    if !queued {
+        return Err(ApiError::BadRequest(
+            "Submission cannot be re-queued in the current state".to_string(),
+        ));
+    }
 
     tracing::info!(
         teacher_id = %teacher.id,
@@ -254,31 +348,46 @@ pub(super) async fn grading_status(
         return Err(ApiError::Forbidden("Access denied"));
     }
 
-    let (progress, status_message) = match submission.status {
-        SubmissionStatus::Uploaded => (10, "В очереди на проверку"),
-        SubmissionStatus::Processing => {
-            let mut progress = 50;
-            let mut message = "Проверяется ИИ...";
-            if let Some(started) = submission.ai_request_started_at {
-                let elapsed = OffsetDateTime::now_utc().unix_timestamp()
-                    - started.assume_utc().unix_timestamp();
-                if elapsed > 120 {
-                    progress = 70;
-                    message = "Финальная обработка...";
+    let (progress, status_message) = match submission.ocr_overall_status {
+        OcrOverallStatus::Pending => (10, "OCR в очереди"),
+        OcrOverallStatus::Processing => (35, "OCR обрабатывается"),
+        OcrOverallStatus::InReview => (60, "Ожидается валидация OCR студентом"),
+        OcrOverallStatus::Failed => (65, "OCR не выполнен, требуется ручная проверка"),
+        _ => match submission.llm_precheck_status {
+            LlmPrecheckStatus::Queued => (75, "LLM-препроверка в очереди"),
+            LlmPrecheckStatus::Processing => {
+                let mut progress = 85;
+                let mut message = "LLM-препроверка выполняется";
+                if let Some(started) = submission.ai_request_started_at {
+                    let elapsed = OffsetDateTime::now_utc().unix_timestamp()
+                        - started.assume_utc().unix_timestamp();
+                    if elapsed > 120 {
+                        progress = 92;
+                        message = "LLM-препроверка: финальная обработка";
+                    }
                 }
+                (progress, message)
             }
-            (progress, message)
-        }
-        SubmissionStatus::Preliminary => (100, "Проверено ИИ, ожидает подтверждения преподавателя"),
-        SubmissionStatus::Approved => (100, "Проверено и одобрено"),
-        SubmissionStatus::Flagged => (50, "Требует ручной проверки"),
-        SubmissionStatus::Rejected => (50, "Отклонено"),
+            LlmPrecheckStatus::Failed => (95, "LLM-препроверка завершилась ошибкой"),
+            LlmPrecheckStatus::Completed | LlmPrecheckStatus::Skipped => match submission.status {
+                SubmissionStatus::Preliminary => (100, "Готово к проверке преподавателем"),
+                SubmissionStatus::Approved => (100, "Проверено и одобрено"),
+                SubmissionStatus::Flagged => (100, "Требует ручной проверки"),
+                SubmissionStatus::Rejected => (100, "Отклонено"),
+                SubmissionStatus::Processing => (85, "Обработка"),
+                SubmissionStatus::Uploaded => (80, "Ожидает обработки"),
+            },
+        },
     };
 
     Ok(Json(serde_json::json!({
         "course_id": course_id,
         "submission_id": submission_id,
         "status": submission.status,
+        "ocr_overall_status": submission.ocr_overall_status,
+        "llm_precheck_status": submission.llm_precheck_status,
+        "report_flag": submission.report_flag,
+        "report_summary": submission.report_summary,
         "progress": progress,
         "status_message": status_message,
         "ai_score": submission.ai_score,
@@ -286,6 +395,8 @@ pub(super) async fn grading_status(
         "max_score": submission.max_score,
         "ai_comments": submission.ai_comments,
         "ai_error": submission.ai_error,
+        "ocr_error": submission.ocr_error,
+        "ocr_retry_count": submission.ocr_retry_count,
         "ai_retry_count": submission.ai_retry_count,
         "processing_times": {
             "started_at": submission.ai_request_started_at.map(format_primitive),

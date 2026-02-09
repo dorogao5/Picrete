@@ -3,7 +3,7 @@ use sqlx::{Postgres, QueryBuilder};
 use time::PrimitiveDateTime;
 
 use crate::db::models::Exam;
-use crate::db::types::{ExamStatus, SubmissionStatus};
+use crate::db::types::{ExamStatus, LlmPrecheckStatus, OcrOverallStatus, SubmissionStatus};
 
 pub(crate) const COLUMNS: &str = "\
     id, course_id, title, description, start_time, end_time, duration_minutes, timezone, \
@@ -18,6 +18,9 @@ pub(crate) struct ExamSubmissionRow {
     pub(crate) student_name: String,
     pub(crate) submitted_at: PrimitiveDateTime,
     pub(crate) status: SubmissionStatus,
+    pub(crate) ocr_overall_status: OcrOverallStatus,
+    pub(crate) llm_precheck_status: LlmPrecheckStatus,
+    pub(crate) report_flag: bool,
     pub(crate) ai_score: Option<f64>,
     pub(crate) final_score: Option<f64>,
     pub(crate) max_score: f64,
@@ -386,6 +389,9 @@ pub(crate) async fn list_submissions_by_exam(
                 u.full_name AS student_name,
                 s.submitted_at,
                 s.status,
+                s.ocr_overall_status,
+                s.llm_precheck_status,
+                s.report_flag,
                 s.ai_score,
                 s.final_score,
                 s.max_score
@@ -401,6 +407,16 @@ pub(crate) async fn list_submissions_by_exam(
     if let Some(status) = status {
         builder.push(" AND s.status = ");
         builder.push_bind(status);
+    } else {
+        builder.push(" AND s.status IN (");
+        builder.push_bind(SubmissionStatus::Preliminary);
+        builder.push(", ");
+        builder.push_bind(SubmissionStatus::Approved);
+        builder.push(", ");
+        builder.push_bind(SubmissionStatus::Flagged);
+        builder.push(", ");
+        builder.push_bind(SubmissionStatus::Rejected);
+        builder.push(")");
     }
 
     builder.push(" ORDER BY s.submitted_at DESC OFFSET ");
@@ -430,6 +446,16 @@ pub(crate) async fn count_submissions_by_exam(
     if let Some(status) = status {
         builder.push(" AND s.status = ");
         builder.push_bind(status);
+    } else {
+        builder.push(" AND s.status IN (");
+        builder.push_bind(SubmissionStatus::Preliminary);
+        builder.push(", ");
+        builder.push_bind(SubmissionStatus::Approved);
+        builder.push(", ");
+        builder.push_bind(SubmissionStatus::Flagged);
+        builder.push(", ");
+        builder.push_bind(SubmissionStatus::Rejected);
+        builder.push(")");
     }
 
     builder.build_query_scalar::<i64>().fetch_one(pool).await

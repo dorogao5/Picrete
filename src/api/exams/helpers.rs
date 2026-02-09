@@ -171,6 +171,10 @@ pub(super) async fn fetch_task_types(
 }
 
 pub(super) fn exam_to_response(exam: Exam, task_types: Vec<TaskTypeResponse>) -> ExamResponse {
+    let processing = crate::services::work_processing::WorkProcessingSettings::from_exam_settings(
+        &exam.settings.0,
+    );
+
     ExamResponse {
         id: exam.id,
         course_id: exam.course_id,
@@ -184,6 +188,8 @@ pub(super) fn exam_to_response(exam: Exam, task_types: Vec<TaskTypeResponse>) ->
         allow_breaks: exam.allow_breaks,
         break_duration_minutes: exam.break_duration_minutes,
         auto_save_interval: exam.auto_save_interval,
+        ocr_enabled: processing.ocr_enabled,
+        llm_precheck_enabled: processing.llm_precheck_enabled,
         settings: exam.settings.0,
         status: exam.status,
         created_by: exam.created_by,

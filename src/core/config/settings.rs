@@ -6,8 +6,9 @@ use super::parsing::{
 use super::secret::load_or_create_secret_key;
 use super::types::{
     AdminSettings, AiSettings, ApiSettings, ConfigError, CorsSettings, CourseSettings,
-    DatabaseSettings, ExamSettings, RedisSettings, RuntimeSettings, S3Settings, SecuritySettings,
-    ServerHost, ServerPort, ServerSettings, Settings, StorageSettings, TelemetrySettings,
+    DatabaseSettings, DatalabSettings, ExamSettings, RedisSettings, RuntimeSettings, S3Settings,
+    SecuritySettings, ServerHost, ServerPort, ServerSettings, Settings, StorageSettings,
+    TelemetrySettings,
 };
 
 impl Settings {
@@ -59,6 +60,26 @@ impl Settings {
         let ai_max_tokens = parse_u32("AI_MAX_TOKENS", env_or_default("AI_MAX_TOKENS", "10000"))?;
         let ai_request_timeout =
             parse_u64("AI_REQUEST_TIMEOUT", env_or_default("AI_REQUEST_TIMEOUT", "600"))?;
+
+        let datalab_api_key = env_or_default("DATALAB_API_KEY", "");
+        let datalab_base_url = env_or_default("DATALAB_BASE_URL", "https://www.datalab.to/api/v1");
+        let datalab_mode = env_or_default("DATALAB_MODE", "accurate").to_ascii_lowercase();
+        let datalab_output_format =
+            env_or_default("DATALAB_OUTPUT_FORMAT", "chunks,markdown").to_ascii_lowercase();
+        let datalab_timeout_seconds =
+            parse_u64("DATALAB_TIMEOUT_SECONDS", env_or_default("DATALAB_TIMEOUT_SECONDS", "120"))?;
+        let datalab_poll_interval_seconds = parse_u64(
+            "DATALAB_POLL_INTERVAL_SECONDS",
+            env_or_default("DATALAB_POLL_INTERVAL_SECONDS", "2"),
+        )?;
+        let datalab_max_poll_attempts = parse_u32(
+            "DATALAB_MAX_POLL_ATTEMPTS",
+            env_or_default("DATALAB_MAX_POLL_ATTEMPTS", "120"),
+        )?;
+        let datalab_max_submit_retries = parse_u32(
+            "DATALAB_MAX_SUBMIT_RETRIES",
+            env_or_default("DATALAB_MAX_SUBMIT_RETRIES", "3"),
+        )?;
 
         let max_upload_size_mb =
             parse_u64("MAX_UPLOAD_SIZE_MB", env_or_default("MAX_UPLOAD_SIZE_MB", "10"))?;
@@ -136,6 +157,16 @@ impl Settings {
                 ai_max_tokens,
                 ai_request_timeout,
             },
+            datalab: DatalabSettings {
+                api_key: datalab_api_key,
+                base_url: datalab_base_url,
+                mode: datalab_mode,
+                output_format: datalab_output_format,
+                timeout_seconds: datalab_timeout_seconds,
+                poll_interval_seconds: datalab_poll_interval_seconds,
+                max_poll_attempts: datalab_max_poll_attempts,
+                max_submit_retries: datalab_max_submit_retries,
+            },
             storage: StorageSettings {
                 max_upload_size_mb,
                 allowed_image_extensions,
@@ -202,6 +233,10 @@ impl Settings {
         &self.storage
     }
 
+    pub(crate) fn datalab(&self) -> &DatalabSettings {
+        &self.datalab
+    }
+
     pub(crate) fn s3(&self) -> &S3Settings {
         &self.s3
     }
@@ -243,6 +278,34 @@ impl Settings {
             }
         }
 
+        if self.datalab.mode != "accurate" {
+            return Err(ConfigError::InvalidValue {
+                field: "DATALAB_MODE",
+                value: self.datalab.mode.clone(),
+            });
+        }
+
+        if self.datalab.output_format != "chunks,markdown" {
+            return Err(ConfigError::InvalidValue {
+                field: "DATALAB_OUTPUT_FORMAT",
+                value: self.datalab.output_format.clone(),
+            });
+        }
+
+        if self.datalab.poll_interval_seconds == 0 {
+            return Err(ConfigError::InvalidValue {
+                field: "DATALAB_POLL_INTERVAL_SECONDS",
+                value: "0".to_string(),
+            });
+        }
+
+        if self.datalab.max_poll_attempts == 0 {
+            return Err(ConfigError::InvalidValue {
+                field: "DATALAB_MAX_POLL_ATTEMPTS",
+                value: "0".to_string(),
+            });
+        }
+
         if !(self.runtime.strict_config || self.runtime.environment.is_production()) {
             return Ok(());
         }
@@ -255,6 +318,12 @@ impl Settings {
         }
         if self.ai.openai_base_url.is_empty() {
             return Err(ConfigError::MissingSecret("OPENAI_BASE_URL"));
+        }
+        if self.datalab.api_key.is_empty() {
+            return Err(ConfigError::MissingSecret("DATALAB_API_KEY"));
+        }
+        if self.datalab.base_url.is_empty() {
+            return Err(ConfigError::MissingSecret("DATALAB_BASE_URL"));
         }
         if self.s3.access_key.is_empty() || self.s3.secret_key.is_empty() {
             return Err(ConfigError::MissingSecret("S3_ACCESS_KEY/S3_SECRET_KEY"));

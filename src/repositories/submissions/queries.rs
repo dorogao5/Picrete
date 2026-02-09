@@ -1,7 +1,8 @@
 use sqlx::PgPool;
+use time::PrimitiveDateTime;
 
 use crate::db::models::Submission;
-use crate::db::types::SubmissionStatus;
+use crate::db::types::{LlmPrecheckStatus, OcrOverallStatus};
 
 use super::types::{TeacherSubmissionDetails, COLUMNS};
 
@@ -49,11 +50,17 @@ pub(crate) async fn find_teacher_details(
                 s.student_id,
                 s.submitted_at,
                 s.status,
+                s.ocr_overall_status,
+                s.llm_precheck_status,
+                s.report_flag,
+                s.report_summary,
                 s.ai_score,
                 s.final_score,
                 s.max_score,
                 s.ai_analysis,
                 s.ai_comments,
+                s.ocr_error,
+                s.ai_error,
                 s.teacher_comments,
                 s.is_flagged,
                 s.flag_reasons,
@@ -130,19 +137,52 @@ pub(crate) async fn find_id_by_session(
     .await
 }
 
-pub(crate) async fn list_flagged_for_retry(
+pub(crate) async fn list_failed_ocr_for_retry(
     pool: &PgPool,
     max_retry_count: i32,
 ) -> Result<Vec<(String, String)>, sqlx::Error> {
     sqlx::query_as::<_, (String, String)>(
         "SELECT id, course_id
          FROM submissions
-         WHERE status = $1
-           AND COALESCE(ai_retry_count, 0) < $2
-           AND ai_error IS NOT NULL",
+         WHERE ocr_overall_status = $1
+           AND ocr_retry_count < $2",
     )
-    .bind(SubmissionStatus::Flagged)
+    .bind(OcrOverallStatus::Failed)
     .bind(max_retry_count)
+    .fetch_all(pool)
+    .await
+}
+
+pub(crate) async fn list_stale_ocr_processing(
+    pool: &PgPool,
+    stale_before: PrimitiveDateTime,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT id, course_id
+         FROM submissions
+         WHERE ocr_overall_status = $1
+           AND ocr_started_at IS NOT NULL
+           AND ocr_started_at < $2",
+    )
+    .bind(OcrOverallStatus::Processing)
+    .bind(stale_before)
+    .fetch_all(pool)
+    .await
+}
+
+pub(crate) async fn list_stale_llm_processing(
+    pool: &PgPool,
+    stale_before: PrimitiveDateTime,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT id, course_id
+         FROM submissions
+         WHERE llm_precheck_status = $1
+           AND ai_request_started_at IS NOT NULL
+           AND ai_request_started_at < $2",
+    )
+    .bind(LlmPrecheckStatus::Processing)
+    .bind(stale_before)
     .fetch_all(pool)
     .await
 }

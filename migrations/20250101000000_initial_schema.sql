@@ -50,6 +50,42 @@ CREATE TYPE submissionstatus AS ENUM (
     'rejected'
 );
 
+CREATE TYPE ocrimagestatus AS ENUM (
+    'pending',
+    'processing',
+    'ready',
+    'failed'
+);
+
+CREATE TYPE ocroverallstatus AS ENUM (
+    'not_required',
+    'pending',
+    'processing',
+    'in_review',
+    'validated',
+    'reported',
+    'failed'
+);
+
+CREATE TYPE llmprecheckstatus AS ENUM (
+    'skipped',
+    'queued',
+    'processing',
+    'completed',
+    'failed'
+);
+
+CREATE TYPE ocrpagestatus AS ENUM (
+    'approved',
+    'reported'
+);
+
+CREATE TYPE ocrissueseverity AS ENUM (
+    'minor',
+    'major',
+    'critical'
+);
+
 -- ------------------------------------------------------------
 -- 2. Core identity and course domain
 -- ------------------------------------------------------------
@@ -257,11 +293,19 @@ CREATE TABLE submissions (
     student_id                    TEXT              NOT NULL,
     submitted_at                  TIMESTAMP         NOT NULL,
     status                        submissionstatus  NOT NULL DEFAULT 'uploaded',
+    ocr_overall_status            ocroverallstatus  NOT NULL DEFAULT 'pending',
+    llm_precheck_status           llmprecheckstatus NOT NULL DEFAULT 'skipped',
+    report_flag                   BOOLEAN           NOT NULL DEFAULT FALSE,
+    report_summary                TEXT,
     ai_score                      DOUBLE PRECISION,
     final_score                   DOUBLE PRECISION,
     max_score                     DOUBLE PRECISION  NOT NULL DEFAULT 100,
     ai_analysis                   JSONB,
     ai_comments                   TEXT,
+    ocr_error                     TEXT,
+    ocr_retry_count               INTEGER           NOT NULL DEFAULT 0,
+    ocr_started_at                TIMESTAMP,
+    ocr_completed_at              TIMESTAMP,
     ai_processed_at               TIMESTAMP,
     ai_request_started_at         TIMESTAMP,
     ai_request_completed_at       TIMESTAMP,
@@ -298,7 +342,14 @@ CREATE TABLE submission_images (
     file_size        BIGINT           NOT NULL,
     mime_type        TEXT             NOT NULL,
     is_processed     BOOLEAN          NOT NULL DEFAULT FALSE,
+    ocr_status       ocrimagestatus   NOT NULL DEFAULT 'pending',
     ocr_text         TEXT,
+    ocr_markdown     TEXT,
+    ocr_chunks       JSONB,
+    ocr_model        TEXT,
+    ocr_completed_at TIMESTAMP,
+    ocr_error        TEXT,
+    ocr_request_id   TEXT,
     quality_score    DOUBLE PRECISION,
     order_index      INTEGER          NOT NULL DEFAULT 0,
     perceptual_hash  TEXT,
@@ -306,8 +357,54 @@ CREATE TABLE submission_images (
     processed_at     TIMESTAMP,
 
     CONSTRAINT pk_submission_images PRIMARY KEY (id),
+    CONSTRAINT uq_submission_images_id_course UNIQUE (id, course_id),
     CONSTRAINT fk_submission_images_submission
         FOREIGN KEY (submission_id, course_id) REFERENCES submissions (id, course_id) ON DELETE CASCADE
+);
+
+CREATE TABLE submission_ocr_reviews (
+    id            TEXT           NOT NULL,
+    course_id     TEXT           NOT NULL,
+    submission_id TEXT           NOT NULL,
+    image_id      TEXT           NOT NULL,
+    student_id    TEXT           NOT NULL,
+    page_status   ocrpagestatus  NOT NULL,
+    issue_count   INTEGER        NOT NULL DEFAULT 0,
+    created_at    TIMESTAMP      NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMP      NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_submission_ocr_reviews PRIMARY KEY (id),
+    CONSTRAINT uq_submission_ocr_reviews_id_course UNIQUE (id, course_id),
+    CONSTRAINT uq_submission_ocr_reviews_submission_image UNIQUE (submission_id, image_id),
+    CONSTRAINT fk_submission_ocr_reviews_submission
+        FOREIGN KEY (submission_id, course_id) REFERENCES submissions (id, course_id) ON DELETE CASCADE,
+    CONSTRAINT fk_submission_ocr_reviews_image
+        FOREIGN KEY (image_id, course_id) REFERENCES submission_images (id, course_id) ON DELETE CASCADE,
+    CONSTRAINT fk_submission_ocr_reviews_student
+        FOREIGN KEY (student_id) REFERENCES users (id) ON DELETE CASCADE
+);
+
+CREATE TABLE submission_ocr_issues (
+    id              TEXT              NOT NULL,
+    course_id       TEXT              NOT NULL,
+    ocr_review_id   TEXT              NOT NULL,
+    submission_id   TEXT              NOT NULL,
+    image_id        TEXT              NOT NULL,
+    anchor          JSONB             NOT NULL,
+    original_text   TEXT,
+    suggested_text  TEXT,
+    note            TEXT              NOT NULL,
+    severity        ocrissueseverity  NOT NULL DEFAULT 'major',
+    created_at      TIMESTAMP         NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMP         NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_submission_ocr_issues PRIMARY KEY (id),
+    CONSTRAINT fk_submission_ocr_issues_review
+        FOREIGN KEY (ocr_review_id, course_id) REFERENCES submission_ocr_reviews (id, course_id) ON DELETE CASCADE,
+    CONSTRAINT fk_submission_ocr_issues_submission
+        FOREIGN KEY (submission_id, course_id) REFERENCES submissions (id, course_id) ON DELETE CASCADE,
+    CONSTRAINT fk_submission_ocr_issues_image
+        FOREIGN KEY (image_id, course_id) REFERENCES submission_images (id, course_id) ON DELETE CASCADE
 );
 
 CREATE TABLE submission_scores (
@@ -370,18 +467,37 @@ CREATE INDEX idx_exam_sessions_course_status ON exam_sessions (course_id, status
 -- submissions -------------------------------------------------
 CREATE INDEX idx_submissions_course_student ON submissions (course_id, student_id);
 CREATE INDEX idx_submissions_course_status ON submissions (course_id, status);
+CREATE INDEX idx_submissions_course_ocr_status ON submissions (course_id, ocr_overall_status);
+CREATE INDEX idx_submissions_course_llm_status ON submissions (course_id, llm_precheck_status);
 CREATE INDEX idx_submissions_course_status_ai_started
     ON submissions (course_id, status, ai_request_started_at)
     WHERE ai_request_started_at IS NULL;
 CREATE INDEX idx_submissions_course_flagged_retry
     ON submissions (course_id, status, ai_retry_count)
     WHERE status = 'flagged' AND ai_error IS NOT NULL;
+CREATE INDEX idx_submissions_course_ocr_failed_retry
+    ON submissions (course_id, ocr_overall_status, ocr_retry_count)
+    WHERE ocr_overall_status = 'failed';
 CREATE INDEX idx_submissions_course_created_at ON submissions (course_id, created_at);
 
 -- submission images -------------------------------------------
 CREATE INDEX idx_submission_images_course_submission ON submission_images (course_id, submission_id);
 CREATE INDEX idx_submission_images_course_submission_order
     ON submission_images (course_id, submission_id, order_index);
+CREATE INDEX idx_submission_images_course_submission_ocr
+    ON submission_images (course_id, submission_id, ocr_status);
+CREATE INDEX idx_submission_images_course_ocr_request_id
+    ON submission_images (course_id, ocr_request_id);
+
+-- submission ocr reviews / issues -----------------------------
+CREATE INDEX idx_submission_ocr_reviews_course_submission
+    ON submission_ocr_reviews (course_id, submission_id);
+CREATE INDEX idx_submission_ocr_reviews_course_student
+    ON submission_ocr_reviews (course_id, student_id);
+CREATE INDEX idx_submission_ocr_issues_course_submission
+    ON submission_ocr_issues (course_id, submission_id);
+CREATE INDEX idx_submission_ocr_issues_course_review
+    ON submission_ocr_issues (course_id, ocr_review_id);
 
 -- submission scores -------------------------------------------
 CREATE INDEX idx_submission_scores_course_submission ON submission_scores (course_id, submission_id);

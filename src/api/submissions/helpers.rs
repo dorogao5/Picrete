@@ -8,8 +8,8 @@ use crate::db::models::{Exam, ExamSession, Submission, TaskType, TaskVariant};
 use crate::db::types::{SessionStatus, SubmissionStatus};
 use crate::repositories;
 use crate::schemas::submission::{
-    format_primitive, ExamSessionResponse, SubmissionImageResponse, SubmissionResponse,
-    SubmissionScoreResponse,
+    format_primitive, ExamSessionResponse, SubmissionImageResponse, SubmissionNextStep,
+    SubmissionResponse, SubmissionScoreResponse,
 };
 
 pub(crate) fn session_to_response(session: ExamSession) -> ExamSessionResponse {
@@ -41,6 +41,12 @@ pub(crate) fn to_submission_response(
         student_id: submission.student_id,
         submitted_at: format_primitive(submission.submitted_at),
         status: submission.status,
+        ocr_overall_status: submission.ocr_overall_status,
+        llm_precheck_status: submission.llm_precheck_status,
+        report_flag: submission.report_flag,
+        report_summary: submission.report_summary,
+        ocr_error: submission.ocr_error,
+        llm_error: submission.ai_error,
         ai_score: submission.ai_score,
         final_score: submission.final_score,
         max_score: submission.max_score,
@@ -51,9 +57,18 @@ pub(crate) fn to_submission_response(
         flag_reasons: submission.flag_reasons.0,
         reviewed_by: submission.reviewed_by,
         reviewed_at: submission.reviewed_at.map(format_primitive),
+        next_step: None,
         images,
         scores,
     }
+}
+
+pub(crate) fn with_next_step(
+    mut response: SubmissionResponse,
+    next_step: SubmissionNextStep,
+) -> SubmissionResponse {
+    response.next_step = Some(next_step);
+    response
 }
 
 pub(crate) async fn fetch_exam(
@@ -107,6 +122,10 @@ pub(crate) async fn fetch_images(
             file_size: image.file_size,
             mime_type: image.mime_type,
             is_processed: image.is_processed,
+            ocr_status: image.ocr_status,
+            ocr_text: image.ocr_text,
+            ocr_markdown: image.ocr_markdown,
+            ocr_chunks: image.ocr_chunks.map(|value| value.0),
             quality_score: image.quality_score,
             uploaded_at: format_primitive(image.uploaded_at),
         })

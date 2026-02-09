@@ -6,11 +6,13 @@ use time::OffsetDateTime;
 
 use crate::core::config::Settings;
 
-const GRADING_SYSTEM_PROMPT: &str = r#"Вы — эксперт по химии и опытный преподаватель.
-Ваша задача — проверить решение студента по контрольной работе и выставить баллы согласно критериям.
+const PRECHECK_SYSTEM_PROMPT: &str = r#"Вы — эксперт по химии и опытный преподаватель.
+Ваша задача — выполнить ПРЕДВАРИТЕЛЬНУЮ проверку решения студента по OCR-расшифровке.
 
-ВАЖНО: Если вы не можете распознать текст на изображении или изображение нечитаемо,
-ВЫ ОБЯЗАНЫ вернуть предупреждение с флагом \"unreadable\": true и подробным описанием проблемы.
+Контекст:
+1. OCR может содержать ошибки.
+2. Если студент отправил REPORT, используйте report_issues как источник правок OCR.
+3. Препроверка не заменяет преподавателя: будьте консервативны и объясняйте выводы.
 
 Критерии оценивания:
 1. Корректность метода решения
@@ -19,51 +21,45 @@ const GRADING_SYSTEM_PROMPT: &str = r#"Вы — эксперт по химии �
 4. Правильная запись ответа
 5. Обоснование решения
 
-Правила химии:
-- Проверка баланса химических реакций
-- Проверка валентностей и зарядов
-- Стехиометрические расчеты
-- Перевод единиц измерения
-- Округление по значащим цифрам
-- Проверка формул органических соединений по ИЮПАК
-
 Формат ответа (строгий JSON):
 {
-  \"unreadable\": false,
-  \"unreadable_reason\": null,
-  \"total_score\": <число>,
-  \"max_score\": <число>,
-  \"criteria_scores\": [
+  "unreadable": false,
+  "unreadable_reason": null,
+  "total_score": <число>,
+  "max_score": <число>,
+  "criteria_scores": [
     {
-      \"criterion_name\": \"название критерия\",
-      \"score\": <число>,
-      \"max_score\": <число>,
-      \"comment\": \"комментарий\"
+      "criterion_name": "название критерия",
+      "score": <число>,
+      "max_score": <число>,
+      "comment": "комментарий"
     }
   ],
-  \"detailed_analysis\": {
-    \"method_correctness\": \"анализ метода\",
-    \"calculations\": \"анализ вычислений\",
-    \"units_and_dimensions\": \"анализ размерностей\",
-    \"chemical_rules\": \"проверка химических правил\",
-    \"errors_found\": [\"список ошибок\"]
+  "detailed_analysis": {
+    "method_correctness": "анализ метода",
+    "calculations": "анализ вычислений",
+    "units_and_dimensions": "анализ размерностей",
+    "chemical_rules": "проверка химических правил",
+    "errors_found": ["список ошибок"]
   },
-  \"feedback\": \"Общий фидбек для студента с рекомендациями\",
-  \"recommendations\": [\"рекомендация 1\", \"рекомендация 2\"],
-  \"full_transcription_md\": \"ПОЛНАЯ расшифровка решения студента без ИСПРАВЛЕНИЙ, в Markdown c LaTeX ($ ... $)\",
-  \"per_page_transcriptions\": [\"строго посимвольная md+LaTeX расшифровка для страницы 1\", \"... для страницы 2\", \"...\" ]
+  "feedback": "Общий фидбек для студента с рекомендациями",
+  "recommendations": ["рекомендация 1", "рекомендация 2"],
+  "full_transcription_md": "Сводная OCR-расшифровка в Markdown c LaTeX ($ ... $)",
+  "per_page_transcriptions": ["OCR-страница 1", "OCR-страница 2"]
 }
 "#;
 
 #[derive(Debug, Clone)]
-pub(crate) struct GradeRequest {
-    pub(crate) images: Vec<String>,
+pub(crate) struct LlmPrecheckRequest {
+    pub(crate) submission_id: Option<String>,
+    pub(crate) ocr_markdown_pages: Vec<String>,
+    pub(crate) ocr_report_issues: Vec<Value>,
+    pub(crate) report_summary: Option<String>,
     pub(crate) task_description: String,
     pub(crate) reference_solution: String,
     pub(crate) rubric: Value,
     pub(crate) max_score: f64,
     pub(crate) chemistry_rules: Option<Value>,
-    pub(crate) submission_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,47 +89,36 @@ impl AiGradingService {
         })
     }
 
-    pub(crate) async fn grade_submission(&self, request: GradeRequest) -> Result<Value> {
+    pub(crate) async fn run_precheck(&self, request: LlmPrecheckRequest) -> Result<Value> {
         let started_at = OffsetDateTime::now_utc();
         let timer = Instant::now();
         let submission_id = request.submission_id.clone().unwrap_or_default();
+        let full_ocr = request.ocr_markdown_pages.join("\n\n---\n\n");
 
         let user_prompt = format!(
-            "\nЗадача:\n{}\n\nЭталонное решение:\n{}\n\nКритерии оценивания (максимум {} баллов):\n{}\n\nПравила проверки:\n{}\n\nПроанализируйте решение студента на изображениях и выставите баллы согласно критериям.\nОБЯЗАТЕЛЬНО используйте JSON формат ответа как описано в системном промпте.\n",
+            "\nЗадача:\n{}\n\nЭталонное решение:\n{}\n\nКритерии оценивания (максимум {} баллов):\n{}\n\nПравила проверки:\n{}\n\nOCR по страницам:\n{}\n\nREPORT summary:\n{}\n\nREPORT issues:\n{}\n\nВыполните предварительную проверку по OCR и report-правкам. Ответ строго JSON.\n",
             request.task_description,
             request.reference_solution,
             request.max_score,
             serde_json::to_string_pretty(&request.rubric).unwrap_or_default(),
             serde_json::to_string_pretty(&request.chemistry_rules.unwrap_or_else(|| json!({})))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            serde_json::to_string_pretty(&request.ocr_markdown_pages).unwrap_or_else(|_| full_ocr.clone()),
+            request.report_summary.clone().unwrap_or_default(),
+            serde_json::to_string_pretty(&request.ocr_report_issues).unwrap_or_default(),
         );
-
-        let mut content = vec![json!({"type": "text", "text": user_prompt})];
-        for image in &request.images {
-            if image.starts_with("http") {
-                content.push(json!({
-                    "type": "image_url",
-                    "image_url": {"url": image}
-                }));
-            } else {
-                content.push(json!({
-                    "type": "image_url",
-                    "image_url": {"url": format!("data:image/jpeg;base64,{image}")}
-                }));
-            }
-        }
 
         let payload = json!({
             "model": self.model,
             "messages": [
-                {"role": "system", "content": GRADING_SYSTEM_PROMPT},
-                {"role": "user", "content": content}
+                {"role": "system", "content": PRECHECK_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
             ],
             "max_completion_tokens": self.max_tokens,
             "response_format": {"type": "json_object"}
         });
 
-        tracing::info!(submission_id = %submission_id, "Sending AI grading request");
+        tracing::info!(submission_id = %submission_id, "Sending LLM precheck request");
 
         let url = format!("{}/chat/completions", self.base_url);
         let mut last_error = None;
@@ -186,21 +171,26 @@ impl AiGradingService {
             .and_then(|choices| choices.get(0))
             .and_then(|choice| choice.get("message"))
             .and_then(|message| message.get("content"))
-            .and_then(|value| value.as_str())
+            .and_then(Value::as_str)
             .context("Missing OpenAI response content")?;
 
         let mut result: Value = serde_json::from_str(content).context("Failed to parse AI JSON")?;
 
-        let elapsed = timer.elapsed().as_secs_f64();
-        let completed_at = OffsetDateTime::now_utc();
-        let tokens_used = body
-            .get("usage")
-            .and_then(|usage| usage.get("total_tokens"))
-            .and_then(|value| value.as_u64());
-
         if result.get("unreadable").is_none() {
             result["unreadable"] = Value::Bool(false);
         }
+        if result.get("full_transcription_md").is_none() {
+            result["full_transcription_md"] = Value::String(full_ocr);
+        }
+        if result.get("per_page_transcriptions").is_none() {
+            result["per_page_transcriptions"] = serde_json::to_value(&request.ocr_markdown_pages)
+                .unwrap_or_else(|_| Value::Array(Vec::new()));
+        }
+
+        let elapsed = timer.elapsed().as_secs_f64();
+        let completed_at = OffsetDateTime::now_utc();
+        let tokens_used =
+            body.get("usage").and_then(|usage| usage.get("total_tokens")).and_then(Value::as_u64);
 
         result["_metadata"] = json!({
             "request_started_at": started_at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
@@ -214,7 +204,7 @@ impl AiGradingService {
             submission_id = %submission_id,
             duration_seconds = elapsed,
             tokens_used = tokens_used,
-            "AI grading completed"
+            "LLM precheck completed"
         );
 
         Ok(result)

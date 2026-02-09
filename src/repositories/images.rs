@@ -4,8 +4,9 @@ use crate::db::models::SubmissionImage;
 
 pub(crate) const COLUMNS: &str = "\
     id, course_id, submission_id, filename, file_path, file_size, mime_type, \
-    is_processed, ocr_text, quality_score, order_index, perceptual_hash, \
-    uploaded_at, processed_at";
+    is_processed, ocr_status, ocr_text, ocr_markdown, ocr_chunks, ocr_model, \
+    ocr_completed_at, ocr_error, ocr_request_id, quality_score, order_index, \
+    perceptual_hash, uploaded_at, processed_at";
 
 pub(crate) async fn find_by_id(
     pool: &PgPool,
@@ -111,22 +112,138 @@ pub(crate) async fn insert(
     Ok(())
 }
 
-pub(crate) async fn mark_ocr_processed(
+pub(crate) async fn mark_ocr_processing(
     pool: &PgPool,
     id: &str,
-    ocr_text: &str,
-    processed_at: time::PrimitiveDateTime,
+    request_id: Option<&str>,
+    started_at: time::PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE submission_images
-         SET ocr_text = $1,
-             processed_at = $2,
-             is_processed = TRUE
-         WHERE id = $3",
+         SET ocr_status = $1,
+             ocr_request_id = $2,
+             ocr_error = NULL,
+             processed_at = $3
+         WHERE id = $4",
     )
-    .bind(ocr_text)
-    .bind(processed_at)
+    .bind(crate::db::types::OcrImageStatus::Processing)
+    .bind(request_id)
+    .bind(started_at)
     .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn mark_ocr_ready(
+    pool: &PgPool,
+    id: &str,
+    ocr_text: Option<&str>,
+    ocr_markdown: Option<&str>,
+    ocr_chunks: Option<&serde_json::Value>,
+    ocr_model: Option<&str>,
+    completed_at: time::PrimitiveDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE submission_images
+         SET ocr_status = $1,
+             ocr_text = $2,
+             ocr_markdown = $3,
+             ocr_chunks = $4,
+             ocr_model = $5,
+             ocr_completed_at = $6,
+             ocr_error = NULL,
+             ocr_request_id = NULL,
+             processed_at = $6,
+             is_processed = TRUE
+         WHERE id = $7",
+    )
+    .bind(crate::db::types::OcrImageStatus::Ready)
+    .bind(ocr_text)
+    .bind(ocr_markdown)
+    .bind(ocr_chunks)
+    .bind(ocr_model)
+    .bind(completed_at)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn mark_ocr_failed(
+    pool: &PgPool,
+    id: &str,
+    error: &str,
+    updated_at: time::PrimitiveDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE submission_images
+         SET ocr_status = $1,
+             ocr_error = $2,
+             ocr_request_id = NULL,
+             processed_at = $3
+         WHERE id = $4",
+    )
+    .bind(crate::db::types::OcrImageStatus::Failed)
+    .bind(error)
+    .bind(updated_at)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn mark_stale_processing_failed_by_submission(
+    pool: &PgPool,
+    course_id: &str,
+    submission_id: &str,
+    error: &str,
+    updated_at: time::PrimitiveDateTime,
+) -> Result<u64, sqlx::Error> {
+    let updated = sqlx::query(
+        "UPDATE submission_images
+         SET ocr_status = $1,
+             ocr_error = $2,
+             ocr_request_id = NULL,
+             processed_at = $3
+         WHERE course_id = $4
+           AND submission_id = $5
+           AND ocr_status = $6",
+    )
+    .bind(crate::db::types::OcrImageStatus::Failed)
+    .bind(error)
+    .bind(updated_at)
+    .bind(course_id)
+    .bind(submission_id)
+    .bind(crate::db::types::OcrImageStatus::Processing)
+    .execute(pool)
+    .await?;
+
+    Ok(updated.rows_affected())
+}
+
+pub(crate) async fn reset_ocr_by_submission(
+    pool: &PgPool,
+    course_id: &str,
+    submission_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE submission_images
+         SET ocr_status = $1,
+             ocr_text = NULL,
+             ocr_markdown = NULL,
+             ocr_chunks = NULL,
+             ocr_model = NULL,
+             ocr_completed_at = NULL,
+             ocr_error = NULL,
+             ocr_request_id = NULL,
+             processed_at = NULL,
+             is_processed = FALSE
+         WHERE course_id = $2 AND submission_id = $3",
+    )
+    .bind(crate::db::types::OcrImageStatus::Pending)
+    .bind(course_id)
+    .bind(submission_id)
     .execute(pool)
     .await?;
     Ok(())

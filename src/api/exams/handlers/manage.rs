@@ -8,6 +8,7 @@ use crate::core::time::{primitive_now_utc, to_primitive_utc};
 use crate::db::types::{CourseRole, ExamStatus};
 use crate::repositories;
 use crate::schemas::exam::{ExamResponse, ExamUpdate};
+use crate::services::work_processing::WorkProcessingSettings;
 
 use super::super::helpers;
 use super::super::queries::DeleteExamQuery;
@@ -68,6 +69,19 @@ pub(in crate::api::exams) async fn update_exam(
         return Err(ApiError::BadRequest("end_time must be after start_time".to_string()));
     }
 
+    let current_processing = WorkProcessingSettings::from_exam_settings(&exam.settings.0);
+    let processing = WorkProcessingSettings {
+        ocr_enabled: payload.ocr_enabled.unwrap_or(current_processing.ocr_enabled),
+        llm_precheck_enabled: payload
+            .llm_precheck_enabled
+            .unwrap_or(current_processing.llm_precheck_enabled),
+    }
+    .validate()
+    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    let base_settings = payload.settings.clone().unwrap_or_else(|| exam.settings.0.clone());
+    let merged_settings = processing.merge_into_exam_settings(base_settings);
+
     let now = primitive_now_utc();
     let start_time = payload.start_time.map(to_primitive_utc);
     let end_time = payload.end_time.map(to_primitive_utc);
@@ -82,7 +96,7 @@ pub(in crate::api::exams) async fn update_exam(
             start_time,
             end_time,
             duration_minutes: payload.duration_minutes,
-            settings: payload.settings,
+            settings: Some(merged_settings),
             updated_at: now,
         },
     )

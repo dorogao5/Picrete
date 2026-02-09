@@ -6,7 +6,8 @@ use sqlx::FromRow;
 use time::{OffsetDateTime, PrimitiveDateTime};
 
 use crate::db::types::{
-    CourseRole, DifficultyLevel, ExamStatus, MembershipStatus, SessionStatus, SubmissionStatus,
+    CourseRole, DifficultyLevel, ExamStatus, LlmPrecheckStatus, MembershipStatus, OcrImageStatus,
+    OcrIssueSeverity, OcrOverallStatus, OcrPageStatus, SessionStatus, SubmissionStatus,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -165,11 +166,19 @@ pub(crate) struct Submission {
     pub(crate) student_id: String,
     pub(crate) submitted_at: PrimitiveDateTime,
     pub(crate) status: SubmissionStatus,
+    pub(crate) ocr_overall_status: OcrOverallStatus,
+    pub(crate) llm_precheck_status: LlmPrecheckStatus,
+    pub(crate) report_flag: bool,
+    pub(crate) report_summary: Option<String>,
     pub(crate) ai_score: Option<f64>,
     pub(crate) final_score: Option<f64>,
     pub(crate) max_score: f64,
     pub(crate) ai_analysis: Option<Json<serde_json::Value>>,
     pub(crate) ai_comments: Option<String>,
+    pub(crate) ocr_error: Option<String>,
+    pub(crate) ocr_retry_count: i32,
+    pub(crate) ocr_started_at: Option<PrimitiveDateTime>,
+    pub(crate) ocr_completed_at: Option<PrimitiveDateTime>,
     pub(crate) ai_processed_at: Option<PrimitiveDateTime>,
     pub(crate) ai_request_started_at: Option<PrimitiveDateTime>,
     pub(crate) ai_request_completed_at: Option<PrimitiveDateTime>,
@@ -197,12 +206,48 @@ pub(crate) struct SubmissionImage {
     pub(crate) file_size: i64,
     pub(crate) mime_type: String,
     pub(crate) is_processed: bool,
+    pub(crate) ocr_status: OcrImageStatus,
     pub(crate) ocr_text: Option<String>,
+    pub(crate) ocr_markdown: Option<String>,
+    pub(crate) ocr_chunks: Option<Json<serde_json::Value>>,
+    pub(crate) ocr_model: Option<String>,
+    pub(crate) ocr_completed_at: Option<PrimitiveDateTime>,
+    pub(crate) ocr_error: Option<String>,
+    pub(crate) ocr_request_id: Option<String>,
     pub(crate) quality_score: Option<f64>,
     pub(crate) order_index: i32,
     pub(crate) perceptual_hash: Option<String>,
     pub(crate) uploaded_at: PrimitiveDateTime,
     pub(crate) processed_at: Option<PrimitiveDateTime>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct SubmissionOcrReview {
+    pub(crate) id: String,
+    pub(crate) course_id: String,
+    pub(crate) submission_id: String,
+    pub(crate) image_id: String,
+    pub(crate) student_id: String,
+    pub(crate) page_status: OcrPageStatus,
+    pub(crate) issue_count: i32,
+    pub(crate) created_at: PrimitiveDateTime,
+    pub(crate) updated_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct SubmissionOcrIssue {
+    pub(crate) id: String,
+    pub(crate) course_id: String,
+    pub(crate) ocr_review_id: String,
+    pub(crate) submission_id: String,
+    pub(crate) image_id: String,
+    pub(crate) anchor: Json<serde_json::Value>,
+    pub(crate) original_text: Option<String>,
+    pub(crate) suggested_text: Option<String>,
+    pub(crate) note: String,
+    pub(crate) severity: OcrIssueSeverity,
+    pub(crate) created_at: PrimitiveDateTime,
+    pub(crate) updated_at: PrimitiveDateTime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

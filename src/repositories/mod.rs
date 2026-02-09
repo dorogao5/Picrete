@@ -4,6 +4,7 @@ pub(crate) mod courses;
 pub(crate) mod exams;
 pub(crate) mod health;
 pub(crate) mod images;
+pub(crate) mod ocr_reviews;
 pub(crate) mod scores;
 pub(crate) mod sessions;
 pub(crate) mod submissions;

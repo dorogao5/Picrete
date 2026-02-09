@@ -10,7 +10,8 @@ use crate::api::guards::{require_course_role, CurrentUser};
 use crate::core::state::AppState;
 use crate::db::types::{CourseRole, SessionStatus, SubmissionStatus};
 use crate::repositories;
-use crate::schemas::submission::{format_primitive, SubmissionResponse};
+use crate::schemas::submission::{format_primitive, SubmissionNextStep, SubmissionResponse};
+use crate::services::work_processing::WorkProcessingSettings;
 
 pub(in crate::api::submissions) async fn submit_exam(
     Path((course_id, session_id)): Path<(String, String)>,
@@ -60,6 +61,14 @@ pub(in crate::api::submissions) async fn submit_exam(
             .await
             .map_err(|e| ApiError::internal(e, "Failed to refresh submission"))?
             .ok_or_else(|| ApiError::Internal("Submission missing".to_string()))?;
+
+    let exam =
+        crate::api::submissions::helpers::fetch_exam(state.db(), &course_id, &session.exam_id)
+            .await?;
+    let processing = WorkProcessingSettings::from_exam_settings(&exam.settings.0)
+        .validate()
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     let images =
         crate::api::submissions::helpers::fetch_images(state.db(), &course_id, &submission.id)
             .await?;
@@ -68,21 +77,34 @@ pub(in crate::api::submissions) async fn submit_exam(
         .await
         .map_err(|e| ApiError::internal(e, "Failed to update session"))?;
 
-    repositories::submissions::update_status_by_session(
+    repositories::submissions::configure_pipeline_after_submit(
         state.db(),
         &course_id,
         &session_id,
-        SubmissionStatus::Uploaded,
+        processing.ocr_enabled,
         now,
     )
     .await
     .map_err(|e| ApiError::internal(e, "Failed to update submission"))?;
 
+    let submission =
+        repositories::submissions::find_by_session(state.db(), &course_id, &session_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to refresh submission"))?
+            .ok_or_else(|| ApiError::Internal("Submission missing".to_string()))?;
+
     let scores =
         crate::api::submissions::helpers::fetch_scores(state.db(), &course_id, &submission.id)
             .await?;
 
-    Ok(Json(crate::api::submissions::helpers::to_submission_response(submission, images, scores)))
+    let base = crate::api::submissions::helpers::to_submission_response(submission, images, scores);
+    let next_step = if processing.ocr_enabled {
+        SubmissionNextStep::OcrReview
+    } else {
+        SubmissionNextStep::Result
+    };
+
+    Ok(Json(crate::api::submissions::helpers::with_next_step(base, next_step)))
 }
 
 pub(in crate::api::submissions) async fn get_session_result(
@@ -133,6 +155,12 @@ pub(in crate::api::submissions) async fn get_session_result(
         "student_id": submission.student_id,
         "submitted_at": format_primitive(submission.submitted_at),
         "status": submission.status,
+        "ocr_overall_status": submission.ocr_overall_status,
+        "llm_precheck_status": submission.llm_precheck_status,
+        "report_flag": submission.report_flag,
+        "report_summary": submission.report_summary,
+        "ocr_error": submission.ocr_error,
+        "llm_error": submission.ai_error,
         "ai_score": submission.ai_score,
         "final_score": submission.final_score,
         "max_score": submission.max_score,
