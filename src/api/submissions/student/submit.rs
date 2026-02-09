@@ -103,6 +103,15 @@ pub(in crate::api::submissions) async fn submit_exam(
     } else {
         SubmissionNextStep::Result
     };
+    tracing::info!(
+        course_id = %course_id,
+        session_id = %session_id,
+        student_id = %user.id,
+        ocr_enabled = processing.ocr_enabled,
+        llm_precheck_enabled = processing.llm_precheck_enabled,
+        next_step = ?next_step,
+        "Submission accepted and next step resolved"
+    );
 
     Ok(Json(crate::api::submissions::helpers::with_next_step(base, next_step)))
 }

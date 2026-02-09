@@ -387,7 +387,7 @@ pub(crate) async fn list_submissions_by_exam(
                 s.student_id,
                 u.username AS student_username,
                 u.full_name AS student_name,
-                s.submitted_at,
+                es.submitted_at,
                 s.status,
                 s.ocr_overall_status,
                 s.llm_precheck_status,
@@ -403,20 +403,11 @@ pub(crate) async fn list_submissions_by_exam(
     builder.push_bind(course_id);
     builder.push(" AND es.exam_id = ");
     builder.push_bind(exam_id);
+    builder.push(" AND es.submitted_at IS NOT NULL");
 
     if let Some(status) = status {
         builder.push(" AND s.status = ");
         builder.push_bind(status);
-    } else {
-        builder.push(" AND s.status IN (");
-        builder.push_bind(SubmissionStatus::Preliminary);
-        builder.push(", ");
-        builder.push_bind(SubmissionStatus::Approved);
-        builder.push(", ");
-        builder.push_bind(SubmissionStatus::Flagged);
-        builder.push(", ");
-        builder.push_bind(SubmissionStatus::Rejected);
-        builder.push(")");
     }
 
     builder.push(" ORDER BY s.submitted_at DESC OFFSET ");
@@ -442,20 +433,11 @@ pub(crate) async fn count_submissions_by_exam(
     builder.push_bind(course_id);
     builder.push(" AND es.exam_id = ");
     builder.push_bind(exam_id);
+    builder.push(" AND es.submitted_at IS NOT NULL");
 
     if let Some(status) = status {
         builder.push(" AND s.status = ");
         builder.push_bind(status);
-    } else {
-        builder.push(" AND s.status IN (");
-        builder.push_bind(SubmissionStatus::Preliminary);
-        builder.push(", ");
-        builder.push_bind(SubmissionStatus::Approved);
-        builder.push(", ");
-        builder.push_bind(SubmissionStatus::Flagged);
-        builder.push(", ");
-        builder.push_bind(SubmissionStatus::Rejected);
-        builder.push(")");
     }
 
     builder.build_query_scalar::<i64>().fetch_one(pool).await
