@@ -12,14 +12,18 @@ pub(crate) async fn claim_next_for_processing(
 ) -> Result<Option<(String, String)>, sqlx::Error> {
     sqlx::query_as::<_, (String, String)>(
         "WITH candidate AS (
-            SELECT id, course_id
-            FROM submissions
-            WHERE status IN ($1, $2)
-              AND ai_request_started_at IS NULL
-            ORDER BY CASE WHEN status = $1 THEN 0 ELSE 1 END,
-                     COALESCE(ai_retry_count, 0),
-                     created_at
-            FOR UPDATE SKIP LOCKED
+            SELECT s.id, s.course_id
+            FROM submissions s
+            JOIN exam_sessions es
+              ON es.course_id = s.course_id
+             AND es.id = s.session_id
+            WHERE s.status IN ($1, $2)
+              AND s.ai_request_started_at IS NULL
+              AND es.submitted_at IS NOT NULL
+            ORDER BY CASE WHEN s.status = $1 THEN 0 ELSE 1 END,
+                     COALESCE(s.ai_retry_count, 0),
+                     s.created_at
+            FOR UPDATE OF s SKIP LOCKED
             LIMIT 1
         )
         UPDATE submissions
@@ -337,4 +341,104 @@ pub(crate) async fn queue_regrade(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use time::Duration;
+    use uuid::Uuid;
+
+    use super::claim_next_for_processing;
+    use crate::core::time::primitive_now_utc;
+    use crate::db::types::{CourseRole, ExamStatus, SessionStatus, SubmissionStatus};
+    use crate::repositories;
+    use crate::test_support;
+
+    #[tokio::test]
+    async fn claim_next_for_processing_skips_active_unsubmitted_sessions() {
+        let ctx = test_support::setup_test_context().await;
+        let db = ctx.state.db();
+
+        let teacher = test_support::insert_user(db, "teacher_claim", "Teacher", "Password123").await;
+        let student = test_support::insert_user(db, "student_claim", "Student", "Password123").await;
+        let course =
+            test_support::create_course_with_teacher(db, "claim-course", "Claim Course", &teacher.id)
+                .await;
+        test_support::add_course_role(db, &course.id, &student.id, CourseRole::Student).await;
+
+        let now = primitive_now_utc();
+        let exam_id = Uuid::new_v4().to_string();
+        repositories::exams::create(
+            db,
+            repositories::exams::CreateExam {
+                id: &exam_id,
+                course_id: &course.id,
+                title: "Claim Exam",
+                description: None,
+                start_time: now - Duration::hours(1),
+                end_time: now + Duration::hours(1),
+                duration_minutes: 60,
+                timezone: "UTC",
+                max_attempts: 1,
+                allow_breaks: false,
+                break_duration_minutes: 0,
+                auto_save_interval: 30,
+                status: ExamStatus::Published,
+                created_by: &teacher.id,
+                created_at: now,
+                updated_at: now,
+                settings: serde_json::json!({}),
+            },
+        )
+        .await
+        .expect("create exam");
+
+        let session_id = Uuid::new_v4().to_string();
+        repositories::sessions::create(
+            db,
+            repositories::sessions::CreateSession {
+                id: &session_id,
+                course_id: &course.id,
+                exam_id: &exam_id,
+                student_id: &student.id,
+                variant_seed: 1,
+                variant_assignments: serde_json::json!({}),
+                started_at: now,
+                expires_at: now + Duration::minutes(60),
+                status: SessionStatus::Active,
+                attempt_number: 1,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .await
+        .expect("create session");
+
+        let submission_id = Uuid::new_v4().to_string();
+        repositories::submissions::create_if_absent(
+            db,
+            &submission_id,
+            &course.id,
+            &session_id,
+            &student.id,
+            SubmissionStatus::Uploaded,
+            100.0,
+            now,
+            now,
+        )
+        .await
+        .expect("create submission");
+
+        let claimed_before_submit =
+            claim_next_for_processing(db, now).await.expect("claim before submit");
+        assert!(claimed_before_submit.is_none());
+
+        repositories::sessions::submit(db, &course.id, &session_id, now)
+            .await
+            .expect("submit session");
+
+        let claimed_after_submit =
+            claim_next_for_processing(db, now).await.expect("claim after submit");
+        assert_eq!(claimed_after_submit, Some((submission_id, course.id)));
+    }
 }

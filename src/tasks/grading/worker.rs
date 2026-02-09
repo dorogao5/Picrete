@@ -41,6 +41,13 @@ pub(crate) async fn grade_submission(
     images.sort_by_key(|image| image.order_index);
 
     if images.is_empty() {
+        tracing::warn!(
+            course_id,
+            submission_id = %submission.id,
+            session_id = %session.id,
+            "Submission has no images at grading time"
+        );
+        metrics::counter!("grading_jobs_total", "status" => "no_images").increment(1);
         return flag_submission(
             state.db(),
             course_id,

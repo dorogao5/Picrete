@@ -5,7 +5,8 @@ services:
       dockerfile: Dockerfile
     network_mode: host
     environment:
-      - FIRST_SUPERUSER_ISU=${FIRST_SUPERUSER_ISU}
+      - COURSE_CONTEXT_MODE=route
+      - FIRST_SUPERUSER_USERNAME=${FIRST_SUPERUSER_USERNAME}
       - FIRST_SUPERUSER_PASSWORD=${FIRST_SUPERUSER_PASSWORD}
       - PICRETE_ENV=${PICRETE_ENV}
       - PICRETE_STRICT_CONFIG=${PICRETE_STRICT_CONFIG}
@@ -43,7 +44,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'
+          cpus: "1.0"
           memory: 1536M
     logging:
       driver: "json-file"
@@ -58,12 +59,13 @@ services:
     network_mode: host
     command: ["picrete-worker"]
     environment:
+      - COURSE_CONTEXT_MODE=route
       - POSTGRES_SERVER=localhost
       - POSTGRES_PORT=5432
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
-      - FIRST_SUPERUSER_ISU=${FIRST_SUPERUSER_ISU}
+      - FIRST_SUPERUSER_USERNAME=${FIRST_SUPERUSER_USERNAME}
       - FIRST_SUPERUSER_PASSWORD=${FIRST_SUPERUSER_PASSWORD}
       - PICRETE_ENV=${PICRETE_ENV}
       - PICRETE_STRICT_CONFIG=${PICRETE_STRICT_CONFIG}
@@ -88,7 +90,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          cpus: "0.5"
           memory: 1024M
     logging:
       driver: "json-file"
