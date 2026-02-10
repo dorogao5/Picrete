@@ -242,7 +242,12 @@ pub(crate) async fn list_items(
         builder.push_bind(has_answer);
     }
 
-    builder.push(" ORDER BY i.paragraph, i.number");
+    builder.push(
+        " ORDER BY
+            COALESCE(NULLIF(regexp_replace(split_part(i.number, '.', 1), '[^0-9]', '', 'g'), '')::int, 2147483647),
+            COALESCE(NULLIF(regexp_replace(split_part(i.number, '.', 2), '[^0-9]', '', 'g'), '')::int, 2147483647),
+            i.number",
+    );
     builder.push(" OFFSET ");
     builder.push_bind(params.skip.max(0));
     builder.push(" LIMIT ");
