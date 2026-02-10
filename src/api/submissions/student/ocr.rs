@@ -34,7 +34,8 @@ pub(in crate::api::submissions) async fn get_ocr_pages(
     let exam =
         crate::api::submissions::helpers::fetch_exam(state.db(), &course_id, &session.exam_id)
             .await?;
-    let processing = WorkProcessingSettings::from_exam_settings(&exam.settings.0);
+    let processing = WorkProcessingSettings::from_exam_settings_strict(&exam.settings.0)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     if !processing.ocr_enabled {
         return Err(ApiError::NotFound("OCR_NOT_ENABLED_FOR_WORK".to_string()));
     }
@@ -145,7 +146,8 @@ pub(in crate::api::submissions) async fn review_ocr_page(
     let exam =
         crate::api::submissions::helpers::fetch_exam(state.db(), &course_id, &session.exam_id)
             .await?;
-    let processing = WorkProcessingSettings::from_exam_settings(&exam.settings.0);
+    let processing = WorkProcessingSettings::from_exam_settings_strict(&exam.settings.0)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     if !processing.ocr_enabled {
         return Err(ApiError::NotFound("OCR_NOT_ENABLED_FOR_WORK".to_string()));
     }
@@ -257,7 +259,8 @@ pub(in crate::api::submissions) async fn finalize_ocr_review(
     let exam =
         crate::api::submissions::helpers::fetch_exam(state.db(), &course_id, &session.exam_id)
             .await?;
-    let processing = WorkProcessingSettings::from_exam_settings(&exam.settings.0);
+    let processing = WorkProcessingSettings::from_exam_settings_strict(&exam.settings.0)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     if !processing.ocr_enabled {
         return Err(ApiError::NotFound("OCR_NOT_ENABLED_FOR_WORK".to_string()));
     }

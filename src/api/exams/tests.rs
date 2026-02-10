@@ -240,3 +240,126 @@ async fn teacher_cannot_access_other_teachers_exam_management_endpoints() {
     let body = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "response: {body}");
 }
+
+#[tokio::test]
+async fn teacher_can_create_homework_without_duration() {
+    let ctx = test_support::setup_test_context().await;
+
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "teacher_hw_001", "Teacher User", "teacher-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
+        ctx.state.db(),
+        "chem-hw-101",
+        "Chemistry HW 101",
+        &teacher.id,
+    )
+    .await;
+    let token = test_support::bearer_token(&teacher.id, ctx.state.settings());
+
+    let mut payload = exam_payload();
+    payload["kind"] = json!("homework");
+    payload["duration_minutes"] = serde_json::Value::Null;
+
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/exams", course.id),
+            Some(&token),
+            Some(payload),
+        ))
+        .await
+        .expect("create homework");
+
+    let status = response.status();
+    let created = test_support::read_json(response).await;
+    assert_eq!(status, StatusCode::CREATED, "response: {created}");
+    assert_eq!(created["kind"], "homework");
+    assert_eq!(created["duration_minutes"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn create_homework_with_duration_is_rejected() {
+    let ctx = test_support::setup_test_context().await;
+
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "teacher_hw_002", "Teacher User", "teacher-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
+        ctx.state.db(),
+        "chem-hw-102",
+        "Chemistry HW 102",
+        &teacher.id,
+    )
+    .await;
+    let token = test_support::bearer_token(&teacher.id, ctx.state.settings());
+
+    let mut payload = exam_payload();
+    payload["kind"] = json!("homework");
+    payload["duration_minutes"] = json!(45);
+
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/exams", course.id),
+            Some(&token),
+            Some(payload),
+        ))
+        .await
+        .expect("create invalid homework");
+
+    let status = response.status();
+    let body = test_support::read_json(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "response: {body}");
+    let detail = body["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("duration_minutes must be null when kind is 'homework'"),
+        "unexpected detail: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn create_exam_rejects_llm_when_ocr_disabled() {
+    let ctx = test_support::setup_test_context().await;
+
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "teacher_hw_003", "Teacher User", "teacher-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
+        ctx.state.db(),
+        "chem-hw-103",
+        "Chemistry HW 103",
+        &teacher.id,
+    )
+    .await;
+    let token = test_support::bearer_token(&teacher.id, ctx.state.settings());
+
+    let mut payload = exam_payload();
+    payload["ocr_enabled"] = json!(false);
+    payload["llm_precheck_enabled"] = json!(true);
+
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/exams", course.id),
+            Some(&token),
+            Some(payload),
+        ))
+        .await
+        .expect("create invalid processing config");
+
+    let status = response.status();
+    let body = test_support::read_json(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "response: {body}");
+    let detail = body["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("llm_precheck_enabled cannot be true when ocr_enabled is false"),
+        "unexpected detail: {detail}"
+    );
+}

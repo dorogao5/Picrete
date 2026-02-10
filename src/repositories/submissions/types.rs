@@ -1,7 +1,7 @@
 use sqlx::types::Json;
 use time::PrimitiveDateTime;
 
-use crate::db::types::{LlmPrecheckStatus, OcrOverallStatus, SubmissionStatus};
+use crate::db::types::{LlmPrecheckStatus, OcrOverallStatus, SubmissionStatus, WorkKind};
 use std::collections::HashMap;
 
 pub(crate) const COLUMNS: &str = "\
@@ -38,6 +38,7 @@ pub(crate) struct TeacherSubmissionDetails {
     pub(crate) reviewed_at: Option<PrimitiveDateTime>,
     pub(crate) exam_id: String,
     pub(crate) exam_title: String,
+    pub(crate) exam_kind: WorkKind,
     pub(crate) variant_assignments: Json<HashMap<String, String>>,
     pub(crate) student_name: String,
     pub(crate) student_username: String,

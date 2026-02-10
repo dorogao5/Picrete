@@ -26,7 +26,7 @@ pub(in crate::api::submissions) async fn presigned_upload_url(
         return Err(ApiError::Forbidden("Access denied"));
     }
 
-    let (hard_deadline, session_status) =
+    let (hard_deadline, session_status, _) =
         crate::api::submissions::helpers::enforce_deadline(&session, state.db()).await?;
     if session_status != SessionStatus::Active {
         return Err(ApiError::BadRequest("Session is not active".to_string()));
@@ -80,7 +80,7 @@ pub(in crate::api::submissions) async fn upload_image(
         return Err(ApiError::Forbidden("Access denied"));
     }
 
-    let (hard_deadline, session_status) =
+    let (hard_deadline, session_status, _) =
         crate::api::submissions::helpers::enforce_deadline(&session, state.db()).await?;
     if session_status != SessionStatus::Active {
         return Err(ApiError::BadRequest("Session is not active".to_string()));

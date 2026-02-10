@@ -29,11 +29,11 @@ impl WorkProcessingSettings {
         let llm_precheck_enabled =
             processing.get("llm_precheck_enabled").and_then(Value::as_bool).unwrap_or(true);
 
-        if !ocr_enabled {
-            return Self { ocr_enabled, llm_precheck_enabled: false };
-        }
-
         Self { ocr_enabled, llm_precheck_enabled }
+    }
+
+    pub(crate) fn from_exam_settings_strict(settings: &Value) -> Result<Self> {
+        Self::from_exam_settings(settings).validate()
     }
 
     pub(crate) fn merge_into_exam_settings(self, base_settings: Value) -> Value {

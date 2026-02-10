@@ -46,13 +46,6 @@ pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
             None
         };
 
-        let is_verified = if !user.is_verified {
-            needs_update = true;
-            Some(true)
-        } else {
-            None
-        };
-
         if needs_update {
             repositories::users::update(
                 state.db(),
@@ -61,7 +54,6 @@ pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
                     full_name: None,
                     is_platform_admin,
                     is_active,
-                    is_verified,
                     hashed_password,
                     updated_at: now_primitive,
                 },
@@ -88,7 +80,6 @@ pub(crate) async fn ensure_superuser(state: &AppState) -> anyhow::Result<()> {
             full_name: "Super Admin",
             is_platform_admin: true,
             is_active: true,
-            is_verified: true,
             pd_consent: false,
             pd_consent_at: None,
             pd_consent_version: None,

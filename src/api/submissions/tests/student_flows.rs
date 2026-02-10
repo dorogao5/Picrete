@@ -1,4 +1,4 @@
-use super::create_published_exam;
+use super::{create_published_exam, exam_payload};
 use crate::db::types::{CourseRole, SubmissionStatus};
 use crate::test_support;
 use axum::http::{Method, StatusCode};
@@ -219,4 +219,96 @@ async fn submit_exam_does_not_downgrade_processing_submission() {
     let second_submission = test_support::read_json(response).await;
     assert_eq!(status, StatusCode::OK, "response: {second_submission}");
     assert_eq!(second_submission["status"], "processing");
+}
+
+#[tokio::test]
+async fn homework_variant_response_has_no_timer() {
+    let ctx = test_support::setup_test_context().await;
+
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "teacher026", "Teacher User", "teacher-pass")
+            .await;
+    let student =
+        test_support::insert_user(ctx.state.db(), "student027", "Student User", "student-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
+        ctx.state.db(),
+        "homework-variant-101",
+        "Homework Variant 101",
+        &teacher.id,
+    )
+    .await;
+    test_support::add_course_role(ctx.state.db(), &course.id, &student.id, CourseRole::Student)
+        .await;
+
+    let teacher_token = test_support::bearer_token(&teacher.id, ctx.state.settings());
+    let student_token = test_support::bearer_token(&student.id, ctx.state.settings());
+
+    let mut payload = exam_payload();
+    payload["kind"] = json!("homework");
+    payload["duration_minutes"] = serde_json::Value::Null;
+
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/exams", course.id),
+            Some(&teacher_token),
+            Some(payload),
+        ))
+        .await
+        .expect("create homework");
+    let status = response.status();
+    let created = test_support::read_json(response).await;
+    assert_eq!(status, StatusCode::CREATED, "response: {created}");
+    let exam_id = created["id"].as_str().expect("exam id").to_string();
+
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/exams/{exam_id}/publish", course.id),
+            Some(&teacher_token),
+            None,
+        ))
+        .await
+        .expect("publish homework");
+    let status = response.status();
+    let published = test_support::read_json(response).await;
+    assert_eq!(status, StatusCode::OK, "response: {published}");
+
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/submissions/exams/{exam_id}/enter", course.id),
+            Some(&student_token),
+            None,
+        ))
+        .await
+        .expect("enter homework");
+    let status = response.status();
+    let session = test_support::read_json(response).await;
+    assert_eq!(status, StatusCode::OK, "response: {session}");
+    let session_id = session["id"].as_str().expect("session id");
+
+    let response = ctx
+        .app
+        .oneshot(test_support::json_request(
+            Method::GET,
+            &format!("/api/v1/courses/{}/submissions/sessions/{session_id}/variant", course.id),
+            Some(&student_token),
+            None,
+        ))
+        .await
+        .expect("get homework variant");
+    let status = response.status();
+    let variant = test_support::read_json(response).await;
+    assert_eq!(status, StatusCode::OK, "response: {variant}");
+    assert_eq!(variant["work_kind"], "homework");
+    assert!(variant["time_remaining"].is_null(), "response: {variant}");
+    assert!(variant["hard_deadline"].is_string(), "response: {variant}");
 }

@@ -4,15 +4,16 @@ use axum::{
 };
 use rand::rngs::StdRng;
 use rand::{seq::SliceRandom, SeedableRng};
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::api::errors::ApiError;
 use crate::api::guards::{require_course_role, CurrentUser};
 use crate::core::state::AppState;
-use crate::db::types::{CourseRole, ExamStatus, SessionStatus};
+use crate::db::types::{CourseRole, ExamStatus, SessionStatus, WorkKind};
 use crate::repositories;
 use crate::schemas::submission::{format_primitive, ExamSessionResponse};
+use crate::services::work_timing::compute_session_expiration;
 
 pub(in crate::api::submissions) async fn enter_exam(
     Path((course_id, exam_id)): Path<(String, String)>,
@@ -31,10 +32,10 @@ pub(in crate::api::submissions) async fn enter_exam(
     let now = crate::api::submissions::helpers::now_primitive();
 
     if now < exam.start_time {
-        return Err(ApiError::BadRequest("Exam has not started yet".to_string()));
+        return Err(ApiError::BadRequest("WORK_NOT_STARTED".to_string()));
     }
-    if now > exam.end_time {
-        return Err(ApiError::BadRequest("Exam has ended".to_string()));
+    if now >= exam.end_time {
+        return Err(ApiError::BadRequest("WORK_DEADLINE_PASSED".to_string()));
     }
 
     let task_types = repositories::task_types::list_by_exam(state.db(), &course_id, &exam_id)
@@ -64,9 +65,9 @@ pub(in crate::api::submissions) async fn enter_exam(
         }
     }
 
-    let expires_candidate = now + Duration::minutes(exam.duration_minutes as i64);
     let expires_at =
-        if expires_candidate > exam.end_time { exam.end_time } else { expires_candidate };
+        compute_session_expiration(exam.kind, now, exam.end_time, exam.duration_minutes)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let mut tx = state
         .db()
@@ -165,13 +166,13 @@ pub(in crate::api::submissions) async fn get_session_variant(
     if session.student_id != user.id {
         return Err(ApiError::Forbidden("Access denied"));
     }
-    let (hard_deadline, session_status) =
+    let (hard_deadline, session_status, work_kind) =
         crate::api::submissions::helpers::enforce_deadline(&session, state.db()).await?;
     if session_status != SessionStatus::Active {
         return Err(ApiError::BadRequest("Session is not active".to_string()));
     }
     if OffsetDateTime::now_utc().unix_timestamp() >= hard_deadline.assume_utc().unix_timestamp() {
-        return Err(ApiError::BadRequest("Session has expired".to_string()));
+        return Err(ApiError::BadRequest("WORK_DEADLINE_PASSED".to_string()));
     }
 
     let tasks = crate::api::submissions::helpers::build_task_context_from_assignments(
@@ -182,9 +183,13 @@ pub(in crate::api::submissions) async fn get_session_variant(
     )
     .await?;
 
-    let remaining_seconds =
-        hard_deadline.assume_utc().unix_timestamp() - OffsetDateTime::now_utc().unix_timestamp();
-    let remaining = if remaining_seconds < 0 { 0 } else { remaining_seconds };
+    let remaining = if matches!(work_kind, WorkKind::Control) {
+        let remaining_seconds = hard_deadline.assume_utc().unix_timestamp()
+            - OffsetDateTime::now_utc().unix_timestamp();
+        Some(if remaining_seconds < 0 { 0 } else { remaining_seconds })
+    } else {
+        None
+    };
 
     // Include already-uploaded images so the client can restore state after refresh
     let submission_id_opt =
@@ -217,6 +222,8 @@ pub(in crate::api::submissions) async fn get_session_variant(
 
     Ok(Json(serde_json::json!({
         "session": crate::api::submissions::helpers::session_to_response(session),
+        "work_kind": work_kind,
+        "hard_deadline": format_primitive(hard_deadline),
         "tasks": tasks,
         "time_remaining": remaining,
         "existing_images": existing_images,
@@ -238,7 +245,7 @@ pub(in crate::api::submissions) async fn auto_save(
         return Err(ApiError::Forbidden("Access denied"));
     }
 
-    let (hard_deadline, session_status) =
+    let (hard_deadline, session_status, _) =
         crate::api::submissions::helpers::enforce_deadline(&session, state.db()).await?;
     if session_status != SessionStatus::Active {
         return Err(ApiError::BadRequest("Session is not active".to_string()));

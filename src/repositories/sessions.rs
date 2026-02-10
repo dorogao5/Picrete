@@ -2,7 +2,7 @@ use sqlx::{PgPool, Postgres, QueryBuilder};
 use time::PrimitiveDateTime;
 
 use crate::db::models::ExamSession;
-use crate::db::types::{SessionStatus, SubmissionStatus};
+use crate::db::types::{SessionStatus, SubmissionStatus, WorkKind};
 
 pub(crate) const COLUMNS: &str = "\
     id, course_id, exam_id, student_id, variant_seed, variant_assignments, \
@@ -28,8 +28,11 @@ pub(crate) struct CreateSession<'a> {
 pub(crate) struct ActiveSessionDeadlineRow {
     pub(crate) id: String,
     pub(crate) course_id: String,
+    pub(crate) started_at: PrimitiveDateTime,
     pub(crate) expires_at: PrimitiveDateTime,
     pub(crate) exam_end_time: Option<PrimitiveDateTime>,
+    pub(crate) exam_kind: Option<WorkKind>,
+    pub(crate) exam_duration_minutes: Option<i32>,
 }
 
 pub(crate) async fn find_by_id(
@@ -276,7 +279,13 @@ pub(crate) async fn list_active_with_exam_end(
     pool: &PgPool,
 ) -> Result<Vec<ActiveSessionDeadlineRow>, sqlx::Error> {
     sqlx::query_as::<_, ActiveSessionDeadlineRow>(
-        "SELECT s.id, s.course_id, s.expires_at, e.end_time AS exam_end_time
+        "SELECT s.id,
+                s.course_id,
+                s.started_at,
+                s.expires_at,
+                e.end_time AS exam_end_time,
+                e.kind AS exam_kind,
+                e.duration_minutes AS exam_duration_minutes
          FROM exam_sessions s
          LEFT JOIN exams e ON e.course_id = s.course_id AND e.id = s.exam_id
          WHERE s.status = $1",

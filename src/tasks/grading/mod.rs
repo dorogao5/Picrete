@@ -6,5 +6,7 @@ pub(crate) use maintenance::{
     retry_failed_ocr_submissions,
 };
 pub(crate) use worker::{
-    claim_next_llm_submission, claim_next_ocr_submission, process_submission_ocr, run_llm_precheck,
+    claim_next_llm_submission, claim_next_ocr_submission, process_submission_ocr,
+    recover_llm_submission_on_unexpected_error, recover_ocr_submission_on_unexpected_error,
+    run_llm_precheck,
 };

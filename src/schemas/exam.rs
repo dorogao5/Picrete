@@ -7,7 +7,7 @@ use time::{
 use validator::Validate;
 
 pub(crate) use crate::core::time::format_primitive;
-use crate::db::types::{DifficultyLevel, ExamStatus};
+use crate::db::types::{DifficultyLevel, ExamStatus, WorkKind};
 
 #[derive(Debug, Deserialize, Validate)]
 pub(crate) struct TaskVariantCreate {
@@ -98,13 +98,15 @@ pub(crate) struct ExamCreate {
     pub(crate) title: String,
     #[serde(default)]
     pub(crate) description: Option<String>,
+    #[serde(default = "default_work_kind")]
+    pub(crate) kind: WorkKind,
     #[serde(alias = "startTime", deserialize_with = "deserialize_offset_datetime_flexible")]
     pub(crate) start_time: OffsetDateTime,
     #[serde(alias = "endTime", deserialize_with = "deserialize_offset_datetime_flexible")]
     pub(crate) end_time: OffsetDateTime,
-    #[serde(alias = "durationMinutes")]
+    #[serde(default, alias = "durationMinutes")]
     #[validate(range(min = 1, message = "duration_minutes must be positive"))]
-    pub(crate) duration_minutes: i32,
+    pub(crate) duration_minutes: Option<i32>,
     #[serde(default = "default_timezone")]
     pub(crate) timezone: String,
     #[serde(default = "default_max_attempts")]
@@ -141,6 +143,8 @@ pub(crate) struct ExamUpdate {
     pub(crate) title: Option<String>,
     #[serde(default)]
     pub(crate) description: Option<String>,
+    #[serde(default)]
+    pub(crate) kind: Option<WorkKind>,
     #[serde(
         default,
         alias = "startTime",
@@ -153,8 +157,7 @@ pub(crate) struct ExamUpdate {
         deserialize_with = "deserialize_option_offset_datetime_flexible"
     )]
     pub(crate) end_time: Option<OffsetDateTime>,
-    #[serde(default)]
-    #[serde(alias = "durationMinutes")]
+    #[serde(default, alias = "durationMinutes")]
     #[validate(range(min = 1, message = "duration_minutes must be positive"))]
     pub(crate) duration_minutes: Option<i32>,
     #[serde(default, alias = "ocrEnabled")]
@@ -171,9 +174,10 @@ pub(crate) struct ExamResponse {
     pub(crate) course_id: String,
     pub(crate) title: String,
     pub(crate) description: Option<String>,
+    pub(crate) kind: WorkKind,
     pub(crate) start_time: String,
     pub(crate) end_time: String,
-    pub(crate) duration_minutes: i32,
+    pub(crate) duration_minutes: Option<i32>,
     pub(crate) timezone: String,
     pub(crate) max_attempts: i32,
     pub(crate) allow_breaks: bool,
@@ -195,9 +199,10 @@ pub(crate) struct ExamSummaryResponse {
     pub(crate) id: String,
     pub(crate) course_id: String,
     pub(crate) title: String,
+    pub(crate) kind: WorkKind,
     pub(crate) start_time: String,
     pub(crate) end_time: String,
-    pub(crate) duration_minutes: i32,
+    pub(crate) duration_minutes: Option<i32>,
     pub(crate) status: ExamStatus,
     pub(crate) task_count: i64,
     pub(crate) student_count: i64,
@@ -214,6 +219,10 @@ fn default_difficulty() -> DifficultyLevel {
 
 fn default_timezone() -> String {
     "Europe/Moscow".to_string()
+}
+
+fn default_work_kind() -> WorkKind {
+    WorkKind::Control
 }
 
 fn default_max_attempts() -> i32 {

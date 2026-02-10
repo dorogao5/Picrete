@@ -28,6 +28,11 @@ CREATE TYPE examstatus AS ENUM (
     'archived'
 );
 
+CREATE TYPE workkind AS ENUM (
+    'control',
+    'homework'
+);
+
 CREATE TYPE difficultylevel AS ENUM (
     'easy',
     'medium',
@@ -97,7 +102,6 @@ CREATE TABLE users (
     full_name           TEXT        NOT NULL,
     is_platform_admin   BOOLEAN     NOT NULL DEFAULT FALSE,
     is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
-    is_verified         BOOLEAN     NOT NULL DEFAULT FALSE,
     pd_consent          BOOLEAN     NOT NULL DEFAULT FALSE,
     pd_consent_at       TIMESTAMPTZ,
     pd_consent_version  TEXT,
@@ -195,9 +199,10 @@ CREATE TABLE exams (
     course_id               TEXT        NOT NULL,
     title                   TEXT        NOT NULL,
     description             TEXT,
+    kind                    workkind    NOT NULL DEFAULT 'control',
     start_time              TIMESTAMP   NOT NULL,
     end_time                TIMESTAMP   NOT NULL,
-    duration_minutes        INTEGER     NOT NULL,
+    duration_minutes        INTEGER,
     timezone                TEXT        NOT NULL DEFAULT 'UTC',
     max_attempts            INTEGER     NOT NULL DEFAULT 1,
     allow_breaks            BOOLEAN     NOT NULL DEFAULT FALSE,
@@ -212,6 +217,12 @@ CREATE TABLE exams (
 
     CONSTRAINT pk_exams PRIMARY KEY (id),
     CONSTRAINT uq_exams_id_course UNIQUE (id, course_id),
+    CONSTRAINT chk_exams_time_window CHECK (end_time > start_time),
+    CONSTRAINT chk_exams_kind_duration CHECK (
+        (kind = 'control' AND duration_minutes IS NOT NULL AND duration_minutes > 0)
+        OR
+        (kind = 'homework' AND duration_minutes IS NULL)
+    ),
     CONSTRAINT fk_exams_course
         FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE CASCADE,
     CONSTRAINT fk_exams_created_by
@@ -429,6 +440,85 @@ CREATE TABLE submission_scores (
         FOREIGN KEY (task_type_id, course_id) REFERENCES task_types (id, course_id) ON DELETE CASCADE
 );
 
+CREATE TABLE task_bank_sources (
+    id          TEXT      NOT NULL,
+    code        TEXT      NOT NULL,
+    title       TEXT      NOT NULL,
+    version     TEXT      NOT NULL,
+    is_active   BOOLEAN   NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMP NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_task_bank_sources PRIMARY KEY (id),
+    CONSTRAINT uq_task_bank_sources_code UNIQUE (code)
+);
+
+CREATE TABLE task_bank_items (
+    id          TEXT      NOT NULL,
+    source_id   TEXT      NOT NULL,
+    number      TEXT      NOT NULL,
+    paragraph   TEXT      NOT NULL,
+    topic       TEXT      NOT NULL,
+    text        TEXT      NOT NULL,
+    answer      TEXT,
+    has_answer  BOOLEAN   NOT NULL DEFAULT FALSE,
+    metadata    JSONB     NOT NULL DEFAULT '{}',
+    created_at  TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMP NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_task_bank_items PRIMARY KEY (id),
+    CONSTRAINT fk_task_bank_items_source
+        FOREIGN KEY (source_id) REFERENCES task_bank_sources (id) ON DELETE CASCADE,
+    CONSTRAINT uq_task_bank_items_source_number UNIQUE (source_id, number)
+);
+
+CREATE TABLE task_bank_item_images (
+    id                 TEXT      NOT NULL,
+    task_bank_item_id  TEXT      NOT NULL,
+    relative_path      TEXT      NOT NULL,
+    order_index        INTEGER   NOT NULL,
+    mime_type          TEXT      NOT NULL,
+    created_at         TIMESTAMP NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_task_bank_item_images PRIMARY KEY (id),
+    CONSTRAINT fk_task_bank_item_images_item
+        FOREIGN KEY (task_bank_item_id) REFERENCES task_bank_items (id) ON DELETE CASCADE,
+    CONSTRAINT uq_task_bank_item_images_item_order UNIQUE (task_bank_item_id, order_index)
+);
+
+CREATE TABLE trainer_sets (
+    id          TEXT      NOT NULL,
+    student_id  TEXT      NOT NULL,
+    course_id   TEXT      NOT NULL,
+    title       TEXT      NOT NULL,
+    source_id   TEXT      NOT NULL,
+    filters     JSONB     NOT NULL DEFAULT '{}',
+    is_deleted  BOOLEAN   NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMP NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_trainer_sets PRIMARY KEY (id),
+    CONSTRAINT fk_trainer_sets_student
+        FOREIGN KEY (student_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT fk_trainer_sets_course
+        FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE CASCADE,
+    CONSTRAINT fk_trainer_sets_source
+        FOREIGN KEY (source_id) REFERENCES task_bank_sources (id) ON DELETE RESTRICT
+);
+
+CREATE TABLE trainer_set_items (
+    trainer_set_id      TEXT    NOT NULL,
+    task_bank_item_id   TEXT    NOT NULL,
+    order_index         INTEGER NOT NULL,
+
+    CONSTRAINT pk_trainer_set_items PRIMARY KEY (trainer_set_id, order_index),
+    CONSTRAINT fk_trainer_set_items_set
+        FOREIGN KEY (trainer_set_id) REFERENCES trainer_sets (id) ON DELETE CASCADE,
+    CONSTRAINT fk_trainer_set_items_item
+        FOREIGN KEY (task_bank_item_id) REFERENCES task_bank_items (id) ON DELETE RESTRICT,
+    CONSTRAINT uq_trainer_set_items_item UNIQUE (trainer_set_id, task_bank_item_id)
+);
+
 -- ------------------------------------------------------------
 -- 4. Indexes
 -- ------------------------------------------------------------
@@ -454,6 +544,7 @@ CREATE INDEX idx_course_invite_codes_course_active ON course_invite_codes (cours
 CREATE INDEX idx_exams_course_status ON exams (course_id, status);
 CREATE INDEX idx_exams_course_start_time ON exams (course_id, start_time DESC);
 CREATE INDEX idx_exams_course_status_end_time ON exams (course_id, status, end_time);
+CREATE INDEX idx_exams_course_kind ON exams (course_id, kind);
 
 -- task types / variants --------------------------------------
 CREATE INDEX idx_task_types_course_exam ON task_types (course_id, exam_id, order_index);
@@ -502,3 +593,18 @@ CREATE INDEX idx_submission_ocr_issues_course_review
 -- submission scores -------------------------------------------
 CREATE INDEX idx_submission_scores_course_submission ON submission_scores (course_id, submission_id);
 CREATE INDEX idx_submission_scores_course_task_type ON submission_scores (course_id, task_type_id);
+
+-- task bank ---------------------------------------------------
+CREATE INDEX idx_task_bank_items_source ON task_bank_items (source_id);
+CREATE INDEX idx_task_bank_items_paragraph ON task_bank_items (paragraph);
+CREATE INDEX idx_task_bank_items_topic ON task_bank_items (topic);
+CREATE INDEX idx_task_bank_items_has_answer ON task_bank_items (has_answer);
+CREATE INDEX idx_task_bank_items_source_number ON task_bank_items (source_id, number);
+CREATE INDEX idx_task_bank_item_images_item_order
+    ON task_bank_item_images (task_bank_item_id, order_index);
+
+-- trainer -----------------------------------------------------
+CREATE INDEX idx_trainer_sets_course_student_active
+    ON trainer_sets (course_id, student_id, is_deleted, created_at DESC);
+CREATE INDEX idx_trainer_set_items_set
+    ON trainer_set_items (trainer_set_id, order_index);

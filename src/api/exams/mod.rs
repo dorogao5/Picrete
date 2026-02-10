@@ -15,6 +15,7 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/:exam_id/publish", post(handlers::publish_exam))
         .route("/:exam_id/task-types", post(handlers::add_task_type))
+        .route("/:exam_id/task-types/from-bank", post(handlers::add_task_types_from_bank))
         .route("/:exam_id/submissions", get(handlers::list_exam_submissions))
 }
 

@@ -58,6 +58,21 @@ async fn ocr_worker(
                     grading::process_submission_ocr(&state, &datalab, &course_id, &submission_id)
                         .await
                 {
+                    if let Err(recovery_err) = grading::recover_ocr_submission_on_unexpected_error(
+                        &state,
+                        &course_id,
+                        &submission_id,
+                        &err.to_string(),
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            course_id,
+                            submission_id,
+                            error = %recovery_err,
+                            "Failed to recover OCR submission after worker error"
+                        );
+                    }
                     tracing::error!(
                         course_id,
                         submission_id,
@@ -89,6 +104,21 @@ async fn llm_worker(state: AppState, ai: AiGradingService, mut shutdown: watch::
                 if let Err(err) =
                     grading::run_llm_precheck(&state, &ai, &course_id, &submission_id).await
                 {
+                    if let Err(recovery_err) = grading::recover_llm_submission_on_unexpected_error(
+                        &state,
+                        &course_id,
+                        &submission_id,
+                        &err.to_string(),
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            course_id,
+                            submission_id,
+                            error = %recovery_err,
+                            "Failed to recover LLM submission after worker error"
+                        );
+                    }
                     tracing::error!(
                         course_id,
                         submission_id,

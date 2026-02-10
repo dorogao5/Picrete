@@ -89,8 +89,8 @@ pub(super) fn parse_environment(value: Option<String>) -> Environment {
 
 pub(super) fn parse_course_context_mode(value: Option<String>) -> CourseContextMode {
     match value.as_deref().map(|item| item.to_lowercase()) {
-        Some(ref raw) if raw == "route" => CourseContextMode::Route,
-        _ => CourseContextMode::Header,
+        Some(ref raw) if raw == "header" => CourseContextMode::Header,
+        _ => CourseContextMode::Route,
     }
 }
 
@@ -153,6 +153,6 @@ mod tests {
             parse_course_context_mode(Some("header".to_string())),
             CourseContextMode::Header
         );
-        assert_eq!(parse_course_context_mode(None), CourseContextMode::Header);
+        assert_eq!(parse_course_context_mode(None), CourseContextMode::Route);
     }
 }

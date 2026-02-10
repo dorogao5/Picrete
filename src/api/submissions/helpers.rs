@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::api::errors::ApiError;
 pub(crate) use crate::core::time::primitive_now_utc as now_primitive;
 use crate::db::models::{Exam, ExamSession, Submission, TaskType, TaskVariant};
-use crate::db::types::{SessionStatus, SubmissionStatus};
+use crate::db::types::{SessionStatus, SubmissionStatus, WorkKind};
 use crate::repositories;
 use crate::schemas::submission::{
     format_primitive, ExamSessionResponse, SubmissionImageResponse, SubmissionNextStep,
@@ -214,10 +214,16 @@ pub(crate) async fn build_task_context_from_assignments(
 pub(crate) async fn enforce_deadline(
     session: &ExamSession,
     pool: &sqlx::PgPool,
-) -> Result<(PrimitiveDateTime, SessionStatus), ApiError> {
+) -> Result<(PrimitiveDateTime, SessionStatus, WorkKind), ApiError> {
     let exam = fetch_exam(pool, &session.course_id, &session.exam_id).await?;
-    let hard_deadline =
-        if exam.end_time < session.expires_at { exam.end_time } else { session.expires_at };
+    let hard_deadline = crate::services::work_timing::compute_hard_deadline(
+        exam.kind,
+        session.started_at,
+        session.expires_at,
+        exam.end_time,
+        exam.duration_minutes,
+    )
+    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     if OffsetDateTime::now_utc().unix_timestamp() >= hard_deadline.assume_utc().unix_timestamp()
         && session.status == SessionStatus::Active
@@ -231,10 +237,10 @@ pub(crate) async fn enforce_deadline(
         )
         .await
         .map_err(|e| ApiError::internal(e, "Failed to expire session"))?;
-        return Ok((hard_deadline, SessionStatus::Expired));
+        return Ok((hard_deadline, SessionStatus::Expired, exam.kind));
     }
 
-    Ok((hard_deadline, session.status))
+    Ok((hard_deadline, session.status, exam.kind))
 }
 
 pub(crate) fn sanitized_filename(name: &str) -> String {

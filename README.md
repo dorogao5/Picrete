@@ -1,155 +1,98 @@
 # Picrete Backend
 
-Backend платформы автоматизированной проверки контрольных работ по химии с использованием ИИ.
+Backend платформы Picrete (Rust + Axum) для мультикурсовой EdTech-системы с OCR/LLM пайплайном проверки работ.
 
-Rust API (Axum) + фоновый worker для AI-проверки работ студентов. PostgreSQL, Redis, S3-совместимое хранилище.
+## Что реализовано
 
-Продакшен: https://picrete.com
+- Multi-course архитектура (`/courses/:course_id/...`) и строгая изоляция данных по курсам.
+- Глобальные аккаунты по `username` + course membership роли (`teacher`, `student`).
+- Invite flow: join по коду при signup и после логина.
+- Типы работ: `control`, `homework`.
+- OCR pipeline (DataLab Marker) + обязательный student OCR review + LLM precheck.
+- Task bank (Свиридов), trainer sets, additional materials PDF.
 
 ## Стек
 
-| Компонент | Технология |
-|-----------|-----------|
-| Web-фреймворк | Axum 0.7 |
-| Async runtime | Tokio |
-| База данных | PostgreSQL 14+ (SQLx 0.7) |
-| Очереди/кэш | Redis 6+ |
-| AI | OpenAI-совместимый API |
-| Хранение файлов | Yandex Object Storage (S3) |
-| Аутентификация | JWT (jsonwebtoken) + Argon2 |
-| Метрики | Prometheus |
-| Контейнеризация | Docker |
-| Reverse proxy | Nginx |
+- Rust, Axum, Tokio
+- PostgreSQL + SQLx
+- Redis
+- S3-compatible storage (Yandex Object Storage)
+- OpenAI-compatible LLM API
+- DataLab Marker OCR API
 
-## Структура проекта
+## Структура
 
-```
+```text
 src/
-├── api/                # HTTP-слой
-│   ├── router.rs       # Маршрутизация
-│   ├── auth.rs         # Аутентификация
-│   ├── guards.rs       # Middleware (роли, права)
-│   ├── handlers.rs     # Общие хендлеры
-│   ├── exams/          # Эндпоинты экзаменов
-│   ├── submissions/    # Эндпоинты работ (студент/преподаватель)
-│   ├── users.rs        # Эндпоинты пользователей
-│   ├── pagination.rs   # Пагинация
-│   ├── validation.rs   # Валидация запросов
-│   └── errors.rs       # Обработка ошибок
-├── core/               # Инфраструктура
-│   ├── config.rs       # Загрузка конфигурации из ENV
-│   ├── state.rs        # AppState (DI)
-│   ├── security.rs     # JWT, хеширование паролей
-│   ├── redis.rs        # Redis-клиент
-│   ├── bootstrap.rs    # Инициализация (суперпользователь)
-│   ├── metrics.rs      # Prometheus метрики
-│   ├── telemetry.rs    # Логирование (tracing)
-│   └── shutdown.rs     # Graceful shutdown
-├── db/                 # Слой базы данных
-│   ├── mod.rs          # Пул соединений, миграции
-│   ├── models.rs       # Модели таблиц
-│   └── types.rs        # Enum-типы PostgreSQL
-├── repositories/       # SQL-запросы
-├── schemas/            # DTO (запросы/ответы)
-├── services/           # Бизнес-логика
-│   ├── ai_grading.rs   # AI-проверка работ
-│   └── storage.rs      # S3-хранилище
-├── tasks/              # Фоновые задачи
-│   ├── scheduler.rs    # Планировщик (worker)
-│   └── grading.rs      # Задача проверки
-├── bin/
-│   └── worker.rs       # Точка входа worker
-├── main.rs             # Точка входа API
-└── lib.rs              # Корневой модуль
+  api/
+  schemas/
+  repositories/
+  services/
+  tasks/
+  core/
+  db/
+  main.rs
+  lib.rs
+src/bin/worker.rs
+migrations/
+docs/roadmaps/
 ```
 
-## Запуск для разработки
+## Быстрый старт
 
-### Требования
-
-- Rust 1.88+ (см. `rust-toolchain.toml`)
-- PostgreSQL 14+
-- Redis 6+
-
-### Настройка
+### 1) Подготовка
 
 ```bash
 cp .env.example .env
-# Отредактировать .env — заполнить пароли, ключи
 ```
 
-### Запуск
+Заполните минимум:
+- `POSTGRES_*` / `DATABASE_URL`
+- `REDIS_*`
+- `SECRET_KEY`
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL`
+- `DATALAB_API_KEY`, `DATALAB_BASE_URL`
+- `S3_*`
+- `FIRST_SUPERUSER_USERNAME`, `FIRST_SUPERUSER_PASSWORD`
+- `COURSE_CONTEXT_MODE=route`
+
+### 2) Запуск
 
 ```bash
-# API-сервер (порт 8000)
 cargo run --bin picrete-rust
-
-# Worker (в отдельном терминале)
 cargo run --bin worker
 ```
 
-### Тесты
+### 3) Проверка
 
 ```bash
+cargo check
 cargo test
 ```
 
-## Сборка и деплой (Production)
+Примечание: `tests/migrations_smoke.rs` требует локально настроенную PostgreSQL-роль/БД (например, `picretesuperuser`).
 
-Бинарники собираются локально на сервере, Docker используется только как runtime-контейнер (без компиляции внутри).
+## Основные API-группы
 
-### 1. Сборка
+- `/api/v1/auth`
+- `/api/v1/users`
+- `/api/v1/courses`
+- `/api/v1/courses/:course_id/exams`
+- `/api/v1/courses/:course_id/submissions`
+- `/api/v1/courses/:course_id/task-bank`
+- `/api/v1/courses/:course_id/trainer`
+- `/api/v1/courses/:course_id/materials`
 
-```bash
-cd /srv/picrete/app
-cargo build --release --bin picrete-rust --bin worker
-```
+## OCR/LLM pipeline (кратко)
 
-### 2. Запуск в Docker
+1. Student submit -> submission enters OCR stage (если включен).
+2. Worker OCR -> сохраняет markdown/chunks/bbox geometry.
+3. Student проходит OCR review по страницам -> `Submit` или `Report`.
+4. LLM precheck (если включен) -> `preliminary` для teacher review.
+5. Teacher approve/override/regrade.
 
-```bash
-docker compose -f docker-compose.prod.yml up -d --build
-```
+## Документация
 
-### 3. Проверка
-
-```bash
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs api --tail=30
-curl -fsS http://127.0.0.1:8000/healthz
-```
-
-### Обновление
-
-```bash
-cd /srv/picrete/app
-git pull origin main
-cargo build --release --bin picrete-rust --bin worker
-docker compose -f docker-compose.prod.yml up -d --build
-```
-
-Подробные инструкции по настройке сервера: `DEPLOYMENT_BACKEND.md`
-
-## Переменные окружения
-
-См. `.env.example`. Основные группы:
-
-| Группа | Переменные | Описание |
-|--------|-----------|----------|
-| Database | `POSTGRES_*` | Подключение к PostgreSQL |
-| Redis | `REDIS_*` | Подключение к Redis |
-| Security | `SECRET_KEY` | Ключ для JWT-токенов |
-| AI | `OPENAI_*`, `AI_*` | Настройки AI-модели |
-| S3 | `S3_*` | Yandex Object Storage |
-| Admin | `FIRST_SUPERUSER_*` | ISU и пароль первого администратора |
-| Telemetry | `PICRETE_LOG_*`, `PROMETHEUS_ENABLED` | Логирование, метрики |
-
-## API
-
-После запуска документация доступна:
-- Swagger UI: `http://localhost:8000/api/v1/docs`
-- Продакшен: `https://picrete.com/api/v1/docs`
-
-## Frontend
-
-Репозиторий фронтенда: https://github.com/dorogao5/Front-Picrete
+- Backend architecture: `ARCHITECTURE.md`
+- Детальные roadmap: `docs/roadmaps/`
+- Frontend repo: `../Front-Picrete`

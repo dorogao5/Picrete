@@ -5,10 +5,11 @@ use crate::api::errors::ApiError;
 use crate::api::guards::{require_course_membership, require_course_role, CurrentUser};
 use crate::core::state::AppState;
 use crate::core::time::{primitive_now_utc, to_primitive_utc};
-use crate::db::types::{CourseRole, ExamStatus};
+use crate::db::types::{CourseRole, ExamStatus, WorkKind};
 use crate::repositories;
 use crate::schemas::exam::{ExamResponse, ExamUpdate};
 use crate::services::work_processing::WorkProcessingSettings;
+use crate::services::work_timing::normalize_duration_for_kind;
 
 use super::super::helpers;
 use super::super::queries::DeleteExamQuery;
@@ -69,6 +70,23 @@ pub(in crate::api::exams) async fn update_exam(
         return Err(ApiError::BadRequest("end_time must be after start_time".to_string()));
     }
 
+    let effective_kind = payload.kind.unwrap_or(exam.kind);
+    let effective_duration = if matches!(effective_kind, WorkKind::Homework) {
+        payload.duration_minutes
+    } else {
+        payload.duration_minutes.or(exam.duration_minutes)
+    };
+    let normalized_duration = normalize_duration_for_kind(effective_kind, effective_duration)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let clear_duration = matches!(effective_kind, WorkKind::Homework);
+    let duration_minutes = if clear_duration {
+        None
+    } else if payload.duration_minutes.is_some() || !matches!(exam.kind, WorkKind::Control) {
+        normalized_duration
+    } else {
+        None
+    };
+
     let current_processing = WorkProcessingSettings::from_exam_settings(&exam.settings.0);
     let processing = WorkProcessingSettings {
         ocr_enabled: payload.ocr_enabled.unwrap_or(current_processing.ocr_enabled),
@@ -93,9 +111,11 @@ pub(in crate::api::exams) async fn update_exam(
         repositories::exams::UpdateExam {
             title: payload.title,
             description: payload.description,
+            kind: payload.kind,
             start_time,
             end_time,
-            duration_minutes: payload.duration_minutes,
+            duration_minutes,
+            clear_duration,
             settings: Some(merged_settings),
             updated_at: now,
         },

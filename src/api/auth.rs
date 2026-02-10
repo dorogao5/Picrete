@@ -103,7 +103,6 @@ async fn signup(
             full_name: &payload.full_name,
             is_platform_admin: false,
             is_active: true,
-            is_verified: false,
             pd_consent: true,
             pd_consent_at: Some(now_offset),
             pd_consent_version: Some(pd_consent_version),

@@ -68,6 +68,7 @@ pub(crate) async fn find_teacher_details(
                 s.reviewed_at,
                 es.exam_id,
                 e.title AS exam_title,
+                e.kind AS exam_kind,
                 es.variant_assignments,
                 u.full_name AS student_name,
                 u.username AS student_username

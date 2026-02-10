@@ -141,7 +141,8 @@ pub(crate) async fn ensure_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
 
 pub(crate) async fn reset_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "TRUNCATE submission_scores, submission_images, submissions, exam_sessions, \
+        "TRUNCATE trainer_set_items, trainer_sets, task_bank_item_images, task_bank_items, \
+         task_bank_sources, submission_scores, submission_images, submissions, exam_sessions, \
          task_variants, task_types, exams, course_membership_roles, course_invite_codes, \
          course_memberships, course_identity_policies, courses, users RESTART IDENTITY CASCADE",
     )
@@ -194,7 +195,6 @@ pub(crate) async fn insert_user_with_admin(
             full_name,
             is_platform_admin,
             is_active: true,
-            is_verified: true,
             pd_consent: false,
             pd_consent_at: None,
             pd_consent_version: None,

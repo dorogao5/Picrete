@@ -8,5 +8,7 @@ pub(crate) mod ocr_reviews;
 pub(crate) mod scores;
 pub(crate) mod sessions;
 pub(crate) mod submissions;
+pub(crate) mod task_bank;
 pub(crate) mod task_types;
+pub(crate) mod trainer_sets;
 pub(crate) mod users;

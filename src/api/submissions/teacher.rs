@@ -129,7 +129,12 @@ pub(super) async fn get_submission(
         "scores": scores,
         "student_name": details.student_name,
         "student_username": details.student_username,
-        "exam": {"id": details.exam_id, "course_id": course_id, "title": details.exam_title},
+        "exam": {
+            "id": details.exam_id,
+            "course_id": course_id,
+            "title": details.exam_title,
+            "kind": details.exam_kind
+        },
         "tasks": tasks_payload,
     })))
 }
@@ -289,12 +294,12 @@ pub(super) async fn regrade_submission(
         .map_err(|e| ApiError::internal(e, "Failed to fetch submission exam"))?
         .ok_or_else(|| ApiError::Internal("Submission exam is missing for regrade".to_string()))?;
 
-    let processing = WorkProcessingSettings::from_exam_settings(&exam.settings.0)
-        .validate()
+    let processing = WorkProcessingSettings::from_exam_settings_strict(&exam.settings.0)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-    if !processing.llm_precheck_enabled {
+    if !processing.ocr_enabled || !processing.llm_precheck_enabled {
         return Err(ApiError::BadRequest(
-            "LLM precheck is disabled for this work; regrade is not available".to_string(),
+            "OCR/LLM precheck pipeline is disabled for this work; regrade is not available"
+                .to_string(),
         ));
     }
 

@@ -16,6 +16,7 @@ pub(crate) struct Settings {
     pub(super) exam: ExamSettings,
     pub(super) admin: AdminSettings,
     pub(super) course: CourseSettings,
+    pub(super) task_bank: TaskBankSettings,
     pub(super) telemetry: TelemetrySettings,
 }
 
@@ -118,6 +119,13 @@ pub(crate) struct AdminSettings {
 #[derive(Debug, Clone)]
 pub(crate) struct CourseSettings {
     pub(crate) context_mode: CourseContextMode,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TaskBankSettings {
+    pub(crate) root: String,
+    pub(crate) media_root: String,
+    pub(crate) additional_materials_pdf: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

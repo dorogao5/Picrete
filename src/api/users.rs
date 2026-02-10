@@ -26,9 +26,6 @@ pub(crate) struct UserListQuery {
     #[serde(default)]
     #[serde(alias = "isActive")]
     is_active: Option<bool>,
-    #[serde(default)]
-    #[serde(alias = "isVerified")]
-    is_verified: Option<bool>,
 }
 
 pub(crate) fn router() -> Router<AppState> {
@@ -53,7 +50,6 @@ async fn list_users(
         username: params.username.as_deref(),
         is_platform_admin: params.is_platform_admin,
         is_active: params.is_active,
-        is_verified: params.is_verified,
     };
 
     let users = repositories::users::list(state.db(), filters, skip, limit)
@@ -117,7 +113,6 @@ async fn create_user(
             full_name: &payload.full_name,
             is_platform_admin: payload.is_platform_admin,
             is_active: payload.is_active,
-            is_verified: payload.is_verified,
             pd_consent: false,
             pd_consent_at: None,
             pd_consent_version: None,
@@ -174,7 +169,6 @@ async fn update_user(
             full_name: payload.full_name,
             is_platform_admin: payload.is_platform_admin,
             is_active: payload.is_active,
-            is_verified: payload.is_verified,
             hashed_password,
             updated_at: now_primitive,
         },
@@ -220,7 +214,6 @@ async fn delete_user(
                 username: None,
                 is_platform_admin: Some(true),
                 is_active: None,
-                is_verified: None,
             },
         )
         .await

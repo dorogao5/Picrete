@@ -4,6 +4,7 @@ use time::{Duration, OffsetDateTime};
 use crate::core::state::AppState;
 use crate::core::time::primitive_now_utc as now_primitive;
 use crate::repositories;
+use crate::services::work_timing::compute_hard_deadline;
 
 pub(crate) async fn process_completed_exams(state: &AppState) -> Result<()> {
     let now = now_primitive();
@@ -54,15 +55,39 @@ pub(crate) async fn close_expired_sessions(state: &AppState) -> Result<()> {
     let mut closed = 0;
 
     for session in sessions {
-        let hard_deadline = match session.exam_end_time {
-            Some(end) => {
+        let hard_deadline = match (session.exam_end_time, session.exam_kind) {
+            (Some(end), Some(kind)) => {
+                match compute_hard_deadline(
+                    kind,
+                    session.started_at,
+                    session.expires_at,
+                    end,
+                    session.exam_duration_minutes,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::warn!(
+                            session_id = %session.id,
+                            course_id = %session.course_id,
+                            error = %error,
+                            "Invalid work timing configuration while closing expired session"
+                        );
+                        if end < session.expires_at {
+                            end
+                        } else {
+                            session.expires_at
+                        }
+                    }
+                }
+            }
+            (Some(end), None) => {
                 if end < session.expires_at {
                     end
                 } else {
                     session.expires_at
                 }
             }
-            None => session.expires_at,
+            (None, _) => session.expires_at,
         };
 
         if now.unix_timestamp() < hard_deadline.assume_utc().unix_timestamp() {

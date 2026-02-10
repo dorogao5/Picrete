@@ -528,7 +528,8 @@ pub(crate) async fn queue_regrade(
          WHERE course_id = $5
            AND id = $6
            AND status IN ($7, $8, $9, $10)
-           AND llm_precheck_status <> $11",
+           AND llm_precheck_status <> $11
+           AND ocr_overall_status IN ($12, $13)",
     )
     .bind(SubmissionStatus::Processing)
     .bind(LlmPrecheckStatus::Queued)
@@ -541,6 +542,8 @@ pub(crate) async fn queue_regrade(
     .bind(SubmissionStatus::Flagged)
     .bind(SubmissionStatus::Rejected)
     .bind(LlmPrecheckStatus::Skipped)
+    .bind(OcrOverallStatus::Validated)
+    .bind(OcrOverallStatus::Reported)
     .execute(pool)
     .await?;
     Ok(updated.rows_affected() > 0)
@@ -553,7 +556,7 @@ mod tests {
 
     use super::claim_next_for_ocr;
     use crate::core::time::primitive_now_utc;
-    use crate::db::types::{CourseRole, ExamStatus, SessionStatus, SubmissionStatus};
+    use crate::db::types::{CourseRole, ExamStatus, SessionStatus, SubmissionStatus, WorkKind};
     use crate::repositories;
     use crate::test_support;
 
@@ -584,9 +587,10 @@ mod tests {
                 course_id: &course.id,
                 title: "Claim Exam",
                 description: None,
+                kind: WorkKind::Control,
                 start_time: now - Duration::hours(1),
                 end_time: now + Duration::hours(1),
-                duration_minutes: 60,
+                duration_minutes: Some(60),
                 timezone: "UTC",
                 max_attempts: 1,
                 allow_breaks: false,

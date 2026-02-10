@@ -6,6 +6,8 @@ pub(crate) mod auth;
 pub(crate) mod course;
 pub(crate) mod exam;
 pub(crate) mod submission;
+pub(crate) mod task_bank;
+pub(crate) mod trainer;
 pub(crate) mod user;
 
 #[derive(Debug, Serialize)]

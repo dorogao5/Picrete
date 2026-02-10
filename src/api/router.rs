@@ -17,7 +17,10 @@ use crate::api::auth;
 use crate::api::courses;
 use crate::api::exams;
 use crate::api::handlers;
+use crate::api::materials;
 use crate::api::submissions;
+use crate::api::task_bank;
+use crate::api::trainer;
 use crate::api::users;
 use crate::core::{config::Settings, state::AppState};
 
@@ -36,7 +39,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .nest("/users", users::router())
         .nest("/courses", courses::router())
         .nest("/courses/:course_id/exams", exams::router())
-        .nest("/courses/:course_id/submissions", submissions::router());
+        .nest("/courses/:course_id/submissions", submissions::router())
+        .nest("/courses/:course_id/task-bank", task_bank::router())
+        .nest("/courses/:course_id/trainer", trainer::router())
+        .nest("/courses/:course_id/materials", materials::router());
 
     let request_id_header = HeaderName::from_static("x-request-id");
     let request_id_header_for_span = request_id_header.clone();

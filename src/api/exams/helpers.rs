@@ -180,6 +180,7 @@ pub(super) fn exam_to_response(exam: Exam, task_types: Vec<TaskTypeResponse>) ->
         course_id: exam.course_id,
         title: exam.title,
         description: exam.description,
+        kind: exam.kind,
         start_time: format_primitive(exam.start_time),
         end_time: format_primitive(exam.end_time),
         duration_minutes: exam.duration_minutes,

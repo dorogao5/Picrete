@@ -31,6 +31,14 @@ pub(crate) enum ExamStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "workkind", rename_all = "lowercase")]
+pub(crate) enum WorkKind {
+    Control,
+    Homework,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
 #[sqlx(type_name = "difficultylevel", rename_all = "lowercase")]
 pub(crate) enum DifficultyLevel {
     Easy,

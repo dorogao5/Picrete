@@ -50,7 +50,20 @@ pub(crate) async fn process_submission_ocr(
         .context("Session not found")?;
     let exam =
         fetch_exam(state.db(), course_id, &session.exam_id).await?.context("Exam not found")?;
-    let processing = WorkProcessingSettings::from_exam_settings(&exam.settings.0);
+    let processing = match WorkProcessingSettings::from_exam_settings_strict(&exam.settings.0) {
+        Ok(value) => value,
+        Err(err) => {
+            mark_ocr_failed(
+                state.db(),
+                course_id,
+                &submission.id,
+                &format!("Invalid processing settings: {err}"),
+                vec!["invalid_processing_settings".to_string()],
+            )
+            .await?;
+            return Ok(());
+        }
+    };
 
     if !processing.ocr_enabled {
         repositories::submissions::skip_llm_precheck_after_ocr(
@@ -374,6 +387,49 @@ pub(crate) async fn run_llm_precheck(
     metrics::histogram!("llm_precheck_duration_seconds").record(duration);
     metrics::histogram!("llm_precheck_queue_latency_seconds").record(queue_latency);
     tracing::info!(course_id, submission_id, "LLM precheck completed");
+
+    Ok(())
+}
+
+pub(crate) async fn recover_ocr_submission_on_unexpected_error(
+    state: &AppState,
+    course_id: &str,
+    submission_id: &str,
+    error: &str,
+) -> Result<()> {
+    let now = now_primitive();
+    repositories::images::mark_stale_processing_failed_by_submission(
+        state.db(),
+        course_id,
+        submission_id,
+        error,
+        now,
+    )
+    .await
+    .context("Failed to mark OCR images as failed after worker error")?;
+
+    repositories::submissions::mark_ocr_failed(state.db(), course_id, submission_id, error, now)
+        .await
+        .context("Failed to mark OCR submission as failed after worker error")?;
+
+    Ok(())
+}
+
+pub(crate) async fn recover_llm_submission_on_unexpected_error(
+    state: &AppState,
+    course_id: &str,
+    submission_id: &str,
+    error: &str,
+) -> Result<()> {
+    repositories::submissions::mark_llm_precheck_failed(
+        state.db(),
+        course_id,
+        submission_id,
+        error,
+        now_primitive(),
+    )
+    .await
+    .context("Failed to mark LLM precheck as failed after worker error")?;
 
     Ok(())
 }

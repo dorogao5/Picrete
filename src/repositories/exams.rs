@@ -3,10 +3,12 @@ use sqlx::{Postgres, QueryBuilder};
 use time::PrimitiveDateTime;
 
 use crate::db::models::Exam;
-use crate::db::types::{ExamStatus, LlmPrecheckStatus, OcrOverallStatus, SubmissionStatus};
+use crate::db::types::{
+    ExamStatus, LlmPrecheckStatus, OcrOverallStatus, SubmissionStatus, WorkKind,
+};
 
 pub(crate) const COLUMNS: &str = "\
-    id, course_id, title, description, start_time, end_time, duration_minutes, timezone, \
+    id, course_id, title, description, kind, start_time, end_time, duration_minutes, timezone, \
     max_attempts, allow_breaks, break_duration_minutes, auto_save_interval, \
     status, created_by, created_at, updated_at, published_at, settings";
 
@@ -31,9 +33,10 @@ pub(crate) struct ExamSummaryRow {
     pub(crate) id: String,
     pub(crate) course_id: String,
     pub(crate) title: String,
+    pub(crate) kind: WorkKind,
     pub(crate) start_time: PrimitiveDateTime,
     pub(crate) end_time: PrimitiveDateTime,
-    pub(crate) duration_minutes: i32,
+    pub(crate) duration_minutes: Option<i32>,
     pub(crate) status: ExamStatus,
     pub(crate) task_count: i64,
     pub(crate) student_count: i64,
@@ -46,9 +49,10 @@ pub(crate) struct CreateExam<'a> {
     pub(crate) course_id: &'a str,
     pub(crate) title: &'a str,
     pub(crate) description: Option<&'a str>,
+    pub(crate) kind: WorkKind,
     pub(crate) start_time: PrimitiveDateTime,
     pub(crate) end_time: PrimitiveDateTime,
-    pub(crate) duration_minutes: i32,
+    pub(crate) duration_minutes: Option<i32>,
     pub(crate) timezone: &'a str,
     pub(crate) max_attempts: i32,
     pub(crate) allow_breaks: bool,
@@ -64,9 +68,11 @@ pub(crate) struct CreateExam<'a> {
 pub(crate) struct UpdateExam {
     pub(crate) title: Option<String>,
     pub(crate) description: Option<String>,
+    pub(crate) kind: Option<WorkKind>,
     pub(crate) start_time: Option<PrimitiveDateTime>,
     pub(crate) end_time: Option<PrimitiveDateTime>,
     pub(crate) duration_minutes: Option<i32>,
+    pub(crate) clear_duration: bool,
     pub(crate) settings: Option<serde_json::Value>,
     pub(crate) updated_at: PrimitiveDateTime,
 }
@@ -75,6 +81,7 @@ pub(crate) struct ListExamSummariesParams {
     pub(crate) course_id: String,
     pub(crate) student_visible_only: bool,
     pub(crate) status: Option<ExamStatus>,
+    pub(crate) kind: Option<WorkKind>,
     pub(crate) skip: i64,
     pub(crate) limit: i64,
 }
@@ -85,16 +92,17 @@ pub(crate) async fn create(
 ) -> Result<Exam, sqlx::Error> {
     sqlx::query_as::<_, Exam>(&format!(
         "INSERT INTO exams (
-            id, course_id, title, description, start_time, end_time, duration_minutes, timezone,
+            id, course_id, title, description, kind, start_time, end_time, duration_minutes, timezone,
             max_attempts, allow_breaks, break_duration_minutes, auto_save_interval,
             status, created_by, created_at, updated_at, settings
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
         RETURNING {COLUMNS}",
     ))
     .bind(params.id)
     .bind(params.course_id)
     .bind(params.title)
     .bind(params.description)
+    .bind(params.kind)
     .bind(params.start_time)
     .bind(params.end_time)
     .bind(params.duration_minutes)
@@ -149,7 +157,7 @@ pub(crate) async fn list_summaries(
     params: ListExamSummariesParams,
 ) -> Result<Vec<ExamSummaryRow>, sqlx::Error> {
     let mut builder = QueryBuilder::<Postgres>::new(
-        "SELECT e.id, e.course_id, e.title, e.start_time, e.end_time, e.duration_minutes, e.status,
+        "SELECT e.id, e.course_id, e.title, e.kind, e.start_time, e.end_time, e.duration_minutes, e.status,
                 COALESCE(tc.cnt, 0) AS task_count,
                 COALESCE(sc.cnt, 0) AS student_count,
                 COALESCE(pc.cnt, 0) AS pending_count,
@@ -194,6 +202,11 @@ pub(crate) async fn list_summaries(
         builder.push_bind(status);
     }
 
+    if let Some(kind) = params.kind {
+        builder.push(" AND e.kind = ");
+        builder.push_bind(kind);
+    }
+
     builder.push(" ORDER BY e.start_time DESC");
     builder.push(" OFFSET ");
     builder.push_bind(params.skip.max(0));
@@ -213,17 +226,23 @@ pub(crate) async fn update(
         "UPDATE exams SET
             title = COALESCE($1, title),
             description = COALESCE($2, description),
-            start_time = COALESCE($3, start_time),
-            end_time = COALESCE($4, end_time),
-            duration_minutes = COALESCE($5, duration_minutes),
-            settings = COALESCE($6::jsonb, settings),
-            updated_at = $7
-         WHERE course_id = $8 AND id = $9",
+            kind = COALESCE($3, kind),
+            start_time = COALESCE($4, start_time),
+            end_time = COALESCE($5, end_time),
+            duration_minutes = CASE
+                WHEN $6 THEN NULL
+                ELSE COALESCE($7, duration_minutes)
+            END,
+            settings = COALESCE($8::jsonb, settings),
+            updated_at = $9
+         WHERE course_id = $10 AND id = $11",
     )
     .bind(params.title)
     .bind(params.description)
+    .bind(params.kind)
     .bind(params.start_time)
     .bind(params.end_time)
+    .bind(params.clear_duration)
     .bind(params.duration_minutes)
     .bind(params.settings)
     .bind(params.updated_at)
@@ -342,13 +361,13 @@ pub(crate) async fn list_titles_by_ids(
     pool: &PgPool,
     course_id: &str,
     exam_ids: &[String],
-) -> Result<Vec<(String, String)>, sqlx::Error> {
+) -> Result<Vec<(String, String, WorkKind)>, sqlx::Error> {
     if exam_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    sqlx::query_as::<_, (String, String)>(
-        "SELECT id, title
+    sqlx::query_as::<_, (String, String, WorkKind)>(
+        "SELECT id, title, kind
          FROM exams
          WHERE course_id = $1 AND id = ANY($2)",
     )

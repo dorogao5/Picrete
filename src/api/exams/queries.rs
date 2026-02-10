@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::db::types::{ExamStatus, SubmissionStatus};
+use crate::db::types::{ExamStatus, SubmissionStatus, WorkKind};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct ListExamsQuery {
@@ -10,6 +10,8 @@ pub(super) struct ListExamsQuery {
     pub(super) limit: i64,
     #[serde(default)]
     pub(super) status: Option<ExamStatus>,
+    #[serde(default)]
+    pub(super) kind: Option<WorkKind>,
 }
 
 #[derive(Debug, Deserialize)]

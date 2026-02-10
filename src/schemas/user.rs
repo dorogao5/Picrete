@@ -43,9 +43,6 @@ pub(crate) struct AdminUserCreate {
     #[serde(default = "default_true")]
     #[serde(alias = "isActive")]
     pub(crate) is_active: bool,
-    #[serde(default)]
-    #[serde(alias = "isVerified")]
-    pub(crate) is_verified: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,9 +58,6 @@ pub(crate) struct AdminUserUpdate {
     #[serde(default)]
     #[serde(alias = "isActive")]
     pub(crate) is_active: Option<bool>,
-    #[serde(default)]
-    #[serde(alias = "isVerified")]
-    pub(crate) is_verified: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,7 +67,6 @@ pub(crate) struct UserResponse {
     pub(crate) full_name: String,
     pub(crate) is_platform_admin: bool,
     pub(crate) is_active: bool,
-    pub(crate) is_verified: bool,
     pub(crate) created_at: String,
     pub(crate) pd_consent: bool,
     pub(crate) pd_consent_at: Option<String>,
@@ -91,7 +84,6 @@ impl UserResponse {
             full_name: user.full_name,
             is_platform_admin: user.is_platform_admin,
             is_active: user.is_active,
-            is_verified: user.is_verified,
             created_at: format_primitive(user.created_at),
             pd_consent: user.pd_consent,
             pd_consent_at: user.pd_consent_at.map(format_offset),

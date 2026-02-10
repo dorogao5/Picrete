@@ -12,6 +12,7 @@ use crate::db::types::{CourseRole, SessionStatus, SubmissionStatus};
 use crate::repositories;
 use crate::schemas::submission::{format_primitive, SubmissionNextStep, SubmissionResponse};
 use crate::services::work_processing::WorkProcessingSettings;
+use crate::services::work_timing::submit_grace_period_seconds;
 
 pub(in crate::api::submissions) async fn submit_exam(
     Path((course_id, session_id)): Path<(String, String)>,
@@ -26,15 +27,15 @@ pub(in crate::api::submissions) async fn submit_exam(
         return Err(ApiError::Forbidden("Access denied"));
     }
 
-    let (hard_deadline, session_status) =
+    let (hard_deadline, session_status, work_kind) =
         crate::api::submissions::helpers::enforce_deadline(&session, state.db()).await?;
     let now_offset = OffsetDateTime::now_utc();
     let now = crate::api::submissions::helpers::now_primitive();
-    let recently_expired =
-        now_offset.unix_timestamp() <= hard_deadline.assume_utc().unix_timestamp() + 300;
+    let recently_expired = now_offset.unix_timestamp()
+        <= hard_deadline.assume_utc().unix_timestamp() + submit_grace_period_seconds(work_kind);
 
     if session_status != SessionStatus::Active && !recently_expired {
-        return Err(ApiError::BadRequest("Session is not active or has expired".to_string()));
+        return Err(ApiError::BadRequest("WORK_DEADLINE_PASSED".to_string()));
     }
 
     let max_score =
@@ -65,8 +66,7 @@ pub(in crate::api::submissions) async fn submit_exam(
     let exam =
         crate::api::submissions::helpers::fetch_exam(state.db(), &course_id, &session.exam_id)
             .await?;
-    let processing = WorkProcessingSettings::from_exam_settings(&exam.settings.0)
-        .validate()
+    let processing = WorkProcessingSettings::from_exam_settings_strict(&exam.settings.0)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let images =
@@ -186,6 +186,8 @@ pub(in crate::api::submissions) async fn get_session_result(
             "id": session.exam_id,
             "course_id": exam.course_id,
             "title": exam.title,
+            "kind": exam.kind,
+            "end_time": format_primitive(exam.end_time),
             "max_attempts": exam.max_attempts,
         },
         "session": {

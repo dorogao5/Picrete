@@ -1,6 +1,9 @@
 pub(crate) mod ai_grading;
 pub(crate) mod datalab_ocr;
 pub(crate) mod invite_codes;
+pub(crate) mod materials;
 pub(crate) mod membership_policy;
 pub(crate) mod storage;
+pub(crate) mod task_bank_import;
 pub(crate) mod work_processing;
+pub(crate) mod work_timing;

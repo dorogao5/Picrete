@@ -8,7 +8,7 @@ use super::types::{
     AdminSettings, AiSettings, ApiSettings, ConfigError, CorsSettings, CourseSettings,
     DatabaseSettings, DatalabSettings, ExamSettings, RedisSettings, RuntimeSettings, S3Settings,
     SecuritySettings, ServerHost, ServerPort, ServerSettings, Settings, StorageSettings,
-    TelemetrySettings,
+    TaskBankSettings, TelemetrySettings,
 };
 
 impl Settings {
@@ -112,6 +112,16 @@ impl Settings {
 
         let course_context_mode = parse_course_context_mode(env_optional("COURSE_CONTEXT_MODE"));
 
+        let task_bank_root = env_or_default("TASK_BANK_ROOT", "tasks/Sviridov_tasks");
+        let task_bank_media_root = env_or_default(
+            "TASK_BANK_MEDIA_ROOT",
+            "tasks/Sviridov_tasks/ocr_output/Sviridov_tasks",
+        );
+        let additional_materials_pdf = env_or_default(
+            "ADDITIONAL_MATERIALS_PDF",
+            "tasks/Sviridov_tasks/ocr_output/Sviridov_tasks/addition.pdf",
+        );
+
         let log_level = env_or_default("PICRETE_LOG_LEVEL", "info");
         let json = env_optional("PICRETE_LOG_JSON")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -186,6 +196,11 @@ impl Settings {
             },
             admin: AdminSettings { first_superuser_username, first_superuser_password },
             course: CourseSettings { context_mode: course_context_mode },
+            task_bank: TaskBankSettings {
+                root: task_bank_root,
+                media_root: task_bank_media_root,
+                additional_materials_pdf,
+            },
             telemetry: TelemetrySettings { log_level, json, prometheus_enabled },
         };
 
@@ -253,6 +268,10 @@ impl Settings {
         &self.course
     }
 
+    pub(crate) fn task_bank(&self) -> &TaskBankSettings {
+        &self.task_bank
+    }
+
     pub(crate) fn telemetry(&self) -> &TelemetrySettings {
         &self.telemetry
     }
@@ -304,6 +323,32 @@ impl Settings {
                 field: "DATALAB_MAX_POLL_ATTEMPTS",
                 value: "0".to_string(),
             });
+        }
+
+        if self.runtime.strict_config || self.runtime.environment.is_production() {
+            let task_bank_root = std::path::Path::new(&self.task_bank.root);
+            if !task_bank_root.exists() || !task_bank_root.is_dir() {
+                return Err(ConfigError::InvalidValue {
+                    field: "TASK_BANK_ROOT",
+                    value: self.task_bank.root.clone(),
+                });
+            }
+
+            let task_bank_media_root = std::path::Path::new(&self.task_bank.media_root);
+            if !task_bank_media_root.exists() || !task_bank_media_root.is_dir() {
+                return Err(ConfigError::InvalidValue {
+                    field: "TASK_BANK_MEDIA_ROOT",
+                    value: self.task_bank.media_root.clone(),
+                });
+            }
+
+            let additional_pdf = std::path::Path::new(&self.task_bank.additional_materials_pdf);
+            if !additional_pdf.exists() || !additional_pdf.is_file() {
+                return Err(ConfigError::InvalidValue {
+                    field: "ADDITIONAL_MATERIALS_PDF",
+                    value: self.task_bank.additional_materials_pdf.clone(),
+                });
+            }
         }
 
         if !(self.runtime.strict_config || self.runtime.environment.is_production()) {

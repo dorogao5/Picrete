@@ -4,7 +4,7 @@ use sqlx::{Postgres, QueryBuilder};
 use crate::db::models::User;
 
 const COLUMNS: &str = "\
-    id, username, hashed_password, full_name, is_platform_admin, is_active, is_verified, \
+    id, username, hashed_password, full_name, is_platform_admin, is_active, \
     pd_consent, pd_consent_at, pd_consent_version, terms_accepted_at, \
     terms_version, privacy_version, created_at, updated_at";
 
@@ -13,7 +13,6 @@ pub(crate) struct UserListFilters<'a> {
     pub(crate) username: Option<&'a str>,
     pub(crate) is_platform_admin: Option<bool>,
     pub(crate) is_active: Option<bool>,
-    pub(crate) is_verified: Option<bool>,
 }
 
 pub(crate) async fn find_by_id(pool: &PgPool, id: &str) -> Result<Option<User>, sqlx::Error> {
@@ -73,7 +72,6 @@ pub(crate) struct CreateUser<'a> {
     pub full_name: &'a str,
     pub is_platform_admin: bool,
     pub is_active: bool,
-    pub is_verified: bool,
     pub pd_consent: bool,
     pub pd_consent_at: Option<time::OffsetDateTime>,
     pub pd_consent_version: Option<String>,
@@ -87,11 +85,11 @@ pub(crate) struct CreateUser<'a> {
 pub(crate) async fn create(pool: &PgPool, params: CreateUser<'_>) -> Result<User, sqlx::Error> {
     sqlx::query_as::<_, User>(&format!(
         "INSERT INTO users (
-            id, username, hashed_password, full_name, is_platform_admin, is_active, is_verified,
+            id, username, hashed_password, full_name, is_platform_admin, is_active,
             pd_consent, pd_consent_at, pd_consent_version,
             terms_accepted_at, terms_version, privacy_version,
             created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
         RETURNING {COLUMNS}",
     ))
     .bind(params.id)
@@ -100,7 +98,6 @@ pub(crate) async fn create(pool: &PgPool, params: CreateUser<'_>) -> Result<User
     .bind(params.full_name)
     .bind(params.is_platform_admin)
     .bind(params.is_active)
-    .bind(params.is_verified)
     .bind(params.pd_consent)
     .bind(params.pd_consent_at)
     .bind(params.pd_consent_version)
@@ -117,7 +114,6 @@ pub(crate) struct UpdateUser {
     pub full_name: Option<String>,
     pub is_platform_admin: Option<bool>,
     pub is_active: Option<bool>,
-    pub is_verified: Option<bool>,
     pub hashed_password: Option<String>,
     pub updated_at: time::PrimitiveDateTime,
 }
@@ -128,15 +124,13 @@ pub(crate) async fn update(pool: &PgPool, id: &str, params: UpdateUser) -> Resul
             full_name = COALESCE($1, full_name),
             is_platform_admin = COALESCE($2, is_platform_admin),
             is_active = COALESCE($3, is_active),
-            is_verified = COALESCE($4, is_verified),
-            hashed_password = COALESCE($5, hashed_password),
-            updated_at = $6
-         WHERE id = $7",
+            hashed_password = COALESCE($4, hashed_password),
+            updated_at = $5
+         WHERE id = $6",
     )
     .bind(params.full_name)
     .bind(params.is_platform_admin)
     .bind(params.is_active)
-    .bind(params.is_verified)
     .bind(params.hashed_password)
     .bind(params.updated_at)
     .bind(id)
@@ -176,12 +170,6 @@ fn apply_filters<'a>(builder: &mut QueryBuilder<'a, Postgres>, filters: UserList
         push_filter_separator(builder, &mut has_where);
         builder.push("is_active = ");
         builder.push_bind(is_active);
-    }
-
-    if let Some(is_verified) = filters.is_verified {
-        push_filter_separator(builder, &mut has_where);
-        builder.push("is_verified = ");
-        builder.push_bind(is_verified);
     }
 }
 

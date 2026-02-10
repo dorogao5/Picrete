@@ -20,8 +20,7 @@ async fn admin_can_create_and_update_user() {
         "full_name": "Student User",
         "password": "student-pass",
         "is_platform_admin": false,
-        "is_active": true,
-        "is_verified": false
+        "is_active": true
     });
 
     let response = ctx
@@ -135,7 +134,6 @@ async fn inactive_user_token_is_rejected_by_guard() {
             full_name: None,
             is_platform_admin: None,
             is_active: Some(false),
-            is_verified: None,
             hashed_password: None,
             updated_at: primitive_now_utc(),
         },

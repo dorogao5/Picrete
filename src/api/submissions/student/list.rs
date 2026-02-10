@@ -58,6 +58,7 @@ pub(in crate::api::submissions) async fn get_my_submissions(
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch exam titles"))?
         .into_iter()
+        .map(|(id, title, kind)| (id, (title, kind)))
         .collect::<HashMap<_, _>>();
 
     let submission_ids =
@@ -122,12 +123,20 @@ pub(in crate::api::submissions) async fn get_my_submissions(
             .and_then(|id| scores_by_submission.remove(id))
             .unwrap_or_default();
 
+        let exam_meta = exam_titles.get(&session.exam_id).cloned();
+        let exam_title = exam_meta
+            .as_ref()
+            .map(|(title, _)| title.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+        let exam_kind = exam_meta.map(|(_, kind)| kind);
+
         response.push(serde_json::json!({
             "id": submission.as_ref().map(|s| &s.id),
             "course_id": course_id,
             "session_id": session.id,
             "exam_id": session.exam_id,
-            "exam_title": exam_titles.get(&session.exam_id).cloned().unwrap_or_else(|| "Unknown".to_string()),
+            "exam_title": exam_title,
+            "exam_kind": exam_kind,
             "submitted_at": submission.as_ref().map(|s| format_primitive(s.submitted_at)),
             "status": submission.as_ref().map(|s| &s.status),
             "ocr_overall_status": submission.as_ref().map(|s| &s.ocr_overall_status),

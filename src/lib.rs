@@ -29,6 +29,15 @@ pub async fn run() -> anyhow::Result<()> {
     let storage = StorageService::from_settings(&settings).await?;
     let state = AppState::new(settings, db_pool, redis.clone(), storage);
 
+    let import_summary =
+        services::task_bank_import::import_sviridov(state.db(), state.settings()).await?;
+    tracing::info!(
+        source = %import_summary.source_code,
+        items = import_summary.imported_items,
+        images = import_summary.imported_images,
+        "Task bank imported"
+    );
+
     core::bootstrap::ensure_superuser(&state).await?;
     let app = api::router::router(state.clone());
     let listener = tokio::net::TcpListener::bind(state.settings().server_addr()).await?;
@@ -67,6 +76,15 @@ pub async fn run_worker() -> anyhow::Result<()> {
 
     let storage = StorageService::from_settings(&settings).await?;
     let state = AppState::new(settings, db_pool, redis.clone(), storage);
+
+    let import_summary =
+        services::task_bank_import::import_sviridov(state.db(), state.settings()).await?;
+    tracing::info!(
+        source = %import_summary.source_code,
+        items = import_summary.imported_items,
+        images = import_summary.imported_images,
+        "Task bank imported"
+    );
 
     let result = tasks::scheduler::run(state).await;
 

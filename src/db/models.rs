@@ -7,7 +7,7 @@ use time::{OffsetDateTime, PrimitiveDateTime};
 
 use crate::db::types::{
     CourseRole, DifficultyLevel, ExamStatus, LlmPrecheckStatus, MembershipStatus, OcrImageStatus,
-    OcrIssueSeverity, OcrOverallStatus, OcrPageStatus, SessionStatus, SubmissionStatus,
+    OcrIssueSeverity, OcrOverallStatus, OcrPageStatus, SessionStatus, SubmissionStatus, WorkKind,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -19,7 +19,6 @@ pub(crate) struct User {
     pub(crate) full_name: String,
     pub(crate) is_platform_admin: bool,
     pub(crate) is_active: bool,
-    pub(crate) is_verified: bool,
     pub(crate) pd_consent: bool,
     pub(crate) pd_consent_at: Option<OffsetDateTime>,
     pub(crate) pd_consent_version: Option<String>,
@@ -88,9 +87,10 @@ pub(crate) struct Exam {
     pub(crate) course_id: String,
     pub(crate) title: String,
     pub(crate) description: Option<String>,
+    pub(crate) kind: WorkKind,
     pub(crate) start_time: PrimitiveDateTime,
     pub(crate) end_time: PrimitiveDateTime,
-    pub(crate) duration_minutes: i32,
+    pub(crate) duration_minutes: Option<i32>,
     pub(crate) timezone: String,
     pub(crate) max_attempts: i32,
     pub(crate) allow_breaks: bool,
@@ -265,4 +265,60 @@ pub(crate) struct SubmissionScore {
     pub(crate) teacher_comment: Option<String>,
     pub(crate) created_at: PrimitiveDateTime,
     pub(crate) updated_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct TaskBankSource {
+    pub(crate) id: String,
+    pub(crate) code: String,
+    pub(crate) title: String,
+    pub(crate) version: String,
+    pub(crate) is_active: bool,
+    pub(crate) created_at: PrimitiveDateTime,
+    pub(crate) updated_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct TaskBankItem {
+    pub(crate) id: String,
+    pub(crate) source_id: String,
+    pub(crate) number: String,
+    pub(crate) paragraph: String,
+    pub(crate) topic: String,
+    pub(crate) text: String,
+    pub(crate) answer: Option<String>,
+    pub(crate) has_answer: bool,
+    pub(crate) metadata: Json<serde_json::Value>,
+    pub(crate) created_at: PrimitiveDateTime,
+    pub(crate) updated_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct TaskBankItemImage {
+    pub(crate) id: String,
+    pub(crate) task_bank_item_id: String,
+    pub(crate) relative_path: String,
+    pub(crate) order_index: i32,
+    pub(crate) mime_type: String,
+    pub(crate) created_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct TrainerSet {
+    pub(crate) id: String,
+    pub(crate) student_id: String,
+    pub(crate) course_id: String,
+    pub(crate) title: String,
+    pub(crate) source_id: String,
+    pub(crate) filters: Json<serde_json::Value>,
+    pub(crate) is_deleted: bool,
+    pub(crate) created_at: PrimitiveDateTime,
+    pub(crate) updated_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct TrainerSetItem {
+    pub(crate) trainer_set_id: String,
+    pub(crate) task_bank_item_id: String,
+    pub(crate) order_index: i32,
 }
