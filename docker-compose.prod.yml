@@ -4,12 +4,17 @@ services:
       context: .
       dockerfile: Dockerfile
     network_mode: host
+    volumes:
+      - ./tasks:/app/tasks:ro
     environment:
       - COURSE_CONTEXT_MODE=route
       - FIRST_SUPERUSER_USERNAME=${FIRST_SUPERUSER_USERNAME}
       - FIRST_SUPERUSER_PASSWORD=${FIRST_SUPERUSER_PASSWORD}
       - PICRETE_ENV=${PICRETE_ENV}
       - PICRETE_STRICT_CONFIG=${PICRETE_STRICT_CONFIG}
+      - TASK_BANK_ROOT=${TASK_BANK_ROOT:-/app/tasks/Sviridov_tasks}
+      - TASK_BANK_MEDIA_ROOT=${TASK_BANK_MEDIA_ROOT:-/app/tasks/Sviridov_tasks/ocr_output/Sviridov_tasks}
+      - ADDITIONAL_MATERIALS_PDF=${ADDITIONAL_MATERIALS_PDF:-/app/tasks/Sviridov_tasks/ocr_output/Sviridov_tasks/addition.pdf}
       - POSTGRES_SERVER=localhost
       - POSTGRES_PORT=5432
       - POSTGRES_USER=${POSTGRES_USER}
@@ -66,6 +71,8 @@ services:
       dockerfile: Dockerfile
     network_mode: host
     command: ["picrete-worker"]
+    volumes:
+      - ./tasks:/app/tasks:ro
     environment:
       - COURSE_CONTEXT_MODE=route
       - POSTGRES_SERVER=localhost
@@ -77,6 +84,9 @@ services:
       - FIRST_SUPERUSER_PASSWORD=${FIRST_SUPERUSER_PASSWORD}
       - PICRETE_ENV=${PICRETE_ENV}
       - PICRETE_STRICT_CONFIG=${PICRETE_STRICT_CONFIG}
+      - TASK_BANK_ROOT=${TASK_BANK_ROOT:-/app/tasks/Sviridov_tasks}
+      - TASK_BANK_MEDIA_ROOT=${TASK_BANK_MEDIA_ROOT:-/app/tasks/Sviridov_tasks/ocr_output/Sviridov_tasks}
+      - ADDITIONAL_MATERIALS_PDF=${ADDITIONAL_MATERIALS_PDF:-/app/tasks/Sviridov_tasks/ocr_output/Sviridov_tasks/addition.pdf}
       - REDIS_HOST=localhost
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}
