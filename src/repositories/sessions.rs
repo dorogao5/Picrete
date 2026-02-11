@@ -309,7 +309,7 @@ pub(crate) async fn list_active_by_student(
     sqlx::query_as::<_, ActiveSessionForStudentRow>(
         "SELECT s.id,
                 s.course_id,
-                e.title AS exam_title,
+                e.title AS exam_title
          FROM exam_sessions s
          JOIN exams e ON e.course_id = s.course_id AND e.id = s.exam_id
          WHERE s.student_id = $1
