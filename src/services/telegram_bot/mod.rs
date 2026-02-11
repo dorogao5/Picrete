@@ -46,6 +46,7 @@ struct TgUpdate {
 
 #[derive(Debug, Deserialize)]
 struct TgMessage {
+    message_id: i64,
     chat: TgChat,
     from: Option<TgUser>,
     text: Option<String>,
@@ -88,6 +89,12 @@ struct TgGetFileResponse {
 #[derive(Debug, Deserialize)]
 struct TgFile {
     file_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgOkResponse {
+    ok: bool,
+    description: Option<String>,
 }
 
 impl TelegramBotRuntime {
@@ -204,7 +211,7 @@ impl TelegramBotRuntime {
                 return self.handle_command(chat_id, &from, text).await;
             }
 
-            if self.handle_login_step(chat_id, &from, text).await? {
+            if self.handle_login_step(chat_id, &from, text, message.message_id).await? {
                 return Ok(());
             }
         }
@@ -300,16 +307,13 @@ impl TelegramBotRuntime {
             let mut lines = Vec::with_capacity(sessions.len() + 1);
             lines.push("Активные работы:".to_string());
             for (idx, session) in sessions.iter().enumerate() {
-                lines.push(format!(
-                    "{}. {} [{}] session={}",
-                    idx + 1,
-                    session.exam_title,
-                    session.course_id,
-                    session.id
-                ));
+                lines.push(format!("{}. {}", idx + 1, escape_html(&session.exam_title)));
+                lines.push(format!("<code>/use {}</code>", escape_html(&session.id)));
+                if idx + 1 < sessions.len() {
+                    lines.push(String::new());
+                }
             }
-            lines.push("Выбор: /use <номер> или /use <session_id>".to_string());
-            self.send_message(chat_id, &lines.join("\n")).await?;
+            self.send_message_html(chat_id, &lines.join("\n")).await?;
             return Ok(());
         }
 
@@ -384,7 +388,13 @@ impl TelegramBotRuntime {
         Ok(())
     }
 
-    async fn handle_login_step(&self, chat_id: i64, from: &TgUser, text: &str) -> Result<bool> {
+    async fn handle_login_step(
+        &self,
+        chat_id: i64,
+        from: &TgUser,
+        text: &str,
+        message_id: i64,
+    ) -> Result<bool> {
         let step = self.login_states.lock().await.get(&from.id).cloned();
         let Some(step) = step else {
             return Ok(false);
@@ -396,10 +406,16 @@ impl TelegramBotRuntime {
                     from.id,
                     LoginStep::AwaitPassword { username: text.trim().to_string() },
                 );
-                self.send_message(chat_id, "Введите пароль от Picrete:").await?;
+                self.send_message(
+                    chat_id,
+                    "Введите пароль от Picrete:\nсообщение с паролем будет удалено сразу после проверки.",
+                )
+                .await?;
                 Ok(true)
             }
             LoginStep::AwaitPassword { username } => {
+                self.try_delete_message(chat_id, message_id).await;
+
                 if !self
                     .check_rate_limit(
                         &format!("rl:tg:login:attempt:{}", from.id),
@@ -628,6 +644,60 @@ impl TelegramBotRuntime {
             .context("Failed to send Telegram message")?;
         Ok(())
     }
+
+    async fn send_message_html(&self, chat_id: i64, text: &str) -> Result<()> {
+        self.client
+            .post(format!("https://api.telegram.org/bot{}/sendMessage", self.token))
+            .json(&json!({
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": true,
+            }))
+            .send()
+            .await
+            .context("Failed to send Telegram HTML message")?;
+        Ok(())
+    }
+
+    async fn try_delete_message(&self, chat_id: i64, message_id: i64) {
+        if let Err(error) = self.delete_message(chat_id, message_id).await {
+            tracing::warn!(
+                error = %error,
+                chat_id,
+                message_id,
+                "Failed to delete Telegram message with sensitive input"
+            );
+        }
+    }
+
+    async fn delete_message(&self, chat_id: i64, message_id: i64) -> Result<()> {
+        let response = self
+            .client
+            .post(format!("https://api.telegram.org/bot{}/deleteMessage", self.token))
+            .json(&json!({
+                "chat_id": chat_id,
+                "message_id": message_id,
+            }))
+            .send()
+            .await
+            .context("Failed to request Telegram message deletion")?;
+
+        let payload: TgOkResponse =
+            response.json().await.context("Failed to decode Telegram deleteMessage payload")?;
+
+        if payload.ok {
+            return Ok(());
+        }
+
+        let description =
+            payload.description.unwrap_or_else(|| "unknown Telegram API error".to_string());
+        Err(anyhow!("Telegram deleteMessage returned ok=false: {description}"))
+    }
+}
+
+fn escape_html(value: &str) -> String {
+    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 fn extract_image_payload(message: &TgMessage) -> Result<(String, String, String)> {
