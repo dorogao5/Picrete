@@ -35,6 +35,13 @@ pub(crate) struct ActiveSessionDeadlineRow {
     pub(crate) exam_duration_minutes: Option<i32>,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+pub(crate) struct ActiveSessionForStudentRow {
+    pub(crate) id: String,
+    pub(crate) course_id: String,
+    pub(crate) exam_title: String,
+}
+
 pub(crate) async fn find_by_id(
     pool: &PgPool,
     course_id: &str,
@@ -295,6 +302,26 @@ pub(crate) async fn list_active_with_exam_end(
     .await
 }
 
+pub(crate) async fn list_active_by_student(
+    pool: &PgPool,
+    student_id: &str,
+) -> Result<Vec<ActiveSessionForStudentRow>, sqlx::Error> {
+    sqlx::query_as::<_, ActiveSessionForStudentRow>(
+        "SELECT s.id,
+                s.course_id,
+                e.title AS exam_title,
+         FROM exam_sessions s
+         JOIN exams e ON e.course_id = s.course_id AND e.id = s.exam_id
+         WHERE s.student_id = $1
+           AND s.status = $2
+         ORDER BY s.started_at DESC",
+    )
+    .bind(student_id)
+    .bind(SessionStatus::Active)
+    .fetch_all(pool)
+    .await
+}
+
 pub(crate) async fn expire_with_deadline(
     pool: &PgPool,
     course_id: &str,
@@ -307,13 +334,14 @@ pub(crate) async fn expire_with_deadline(
          SET status = $1,
              submitted_at = COALESCE(submitted_at, $2),
              updated_at = $3
-         WHERE course_id = $4 AND id = $5",
+         WHERE course_id = $4 AND id = $5 AND status = $6",
     )
     .bind(SessionStatus::Expired)
     .bind(hard_deadline)
     .bind(updated_at)
     .bind(course_id)
     .bind(id)
+    .bind(SessionStatus::Active)
     .execute(pool)
     .await?;
     Ok(())

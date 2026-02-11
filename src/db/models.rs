@@ -7,7 +7,8 @@ use time::{OffsetDateTime, PrimitiveDateTime};
 
 use crate::db::types::{
     CourseRole, DifficultyLevel, ExamStatus, LlmPrecheckStatus, MembershipStatus, OcrImageStatus,
-    OcrIssueSeverity, OcrOverallStatus, OcrPageStatus, SessionStatus, SubmissionStatus, WorkKind,
+    OcrIssueSeverity, OcrOverallStatus, OcrPageStatus, SessionStatus, SubmissionStatus,
+    UploadSource, WorkKind,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -216,9 +217,28 @@ pub(crate) struct SubmissionImage {
     pub(crate) ocr_request_id: Option<String>,
     pub(crate) quality_score: Option<f64>,
     pub(crate) order_index: i32,
+    pub(crate) upload_source: UploadSource,
     pub(crate) perceptual_hash: Option<String>,
     pub(crate) uploaded_at: PrimitiveDateTime,
     pub(crate) processed_at: Option<PrimitiveDateTime>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct TelegramUserLink {
+    pub(crate) telegram_user_id: i64,
+    pub(crate) user_id: String,
+    pub(crate) telegram_username: Option<String>,
+    pub(crate) telegram_first_name: Option<String>,
+    pub(crate) linked_at: PrimitiveDateTime,
+    pub(crate) last_seen_at: PrimitiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct TelegramSelectedSession {
+    pub(crate) telegram_user_id: i64,
+    pub(crate) course_id: String,
+    pub(crate) session_id: String,
+    pub(crate) selected_at: PrimitiveDateTime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

@@ -4,7 +4,7 @@ use validator::Validate;
 pub(crate) use crate::core::time::format_primitive;
 use crate::db::types::{
     LlmPrecheckStatus, OcrImageStatus, OcrIssueSeverity, OcrOverallStatus, OcrPageStatus,
-    SessionStatus, SubmissionStatus,
+    SessionStatus, SubmissionStatus, UploadSource,
 };
 
 #[derive(Debug, Serialize)]
@@ -28,6 +28,7 @@ pub(crate) struct SubmissionImageResponse {
     pub(crate) course_id: String,
     pub(crate) filename: String,
     pub(crate) order_index: i32,
+    pub(crate) upload_source: UploadSource,
     pub(crate) file_size: i64,
     pub(crate) mime_type: String,
     pub(crate) is_processed: bool,
@@ -37,6 +38,7 @@ pub(crate) struct SubmissionImageResponse {
     pub(crate) ocr_chunks: Option<serde_json::Value>,
     pub(crate) quality_score: Option<f64>,
     pub(crate) uploaded_at: String,
+    pub(crate) view_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

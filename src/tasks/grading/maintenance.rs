@@ -3,7 +3,9 @@ use time::{Duration, OffsetDateTime};
 
 use crate::core::state::AppState;
 use crate::core::time::primitive_now_utc as now_primitive;
+use crate::db::types::SessionStatus;
 use crate::repositories;
+use crate::services::submission_finalize::{finalize_submission, FinalizeMode};
 use crate::services::work_timing::compute_hard_deadline;
 
 pub(crate) async fn process_completed_exams(state: &AppState) -> Result<()> {
@@ -53,6 +55,7 @@ pub(crate) async fn close_expired_sessions(state: &AppState) -> Result<()> {
         .context("Failed to fetch active sessions")?;
 
     let mut closed = 0;
+    let mut auto_submitted = 0;
 
     for session in sessions {
         let hard_deadline = match (session.exam_end_time, session.exam_kind) {
@@ -94,21 +97,49 @@ pub(crate) async fn close_expired_sessions(state: &AppState) -> Result<()> {
             continue;
         }
 
-        repositories::sessions::expire_with_deadline(
-            state.db(),
-            &session.course_id,
-            &session.id,
-            hard_deadline,
-            now_primitive(),
-        )
-        .await
-        .context("Failed to expire session")?;
+        let Some(full_session) =
+            repositories::sessions::find_by_id(state.db(), &session.course_id, &session.id)
+                .await
+                .context("Failed to re-fetch session for auto-submit")?
+        else {
+            continue;
+        };
 
-        closed += 1;
+        if full_session.status != SessionStatus::Active {
+            continue;
+        }
+
+        match finalize_submission(state, &full_session, FinalizeMode::AutoDeadline, hard_deadline)
+            .await
+        {
+            Ok(_) => {
+                closed += 1;
+                auto_submitted += 1;
+            }
+            Err(error) => {
+                tracing::error!(
+                    course_id = %full_session.course_id,
+                    session_id = %full_session.id,
+                    error = %error,
+                    "Failed to auto-submit expired session"
+                );
+                repositories::sessions::expire_with_deadline(
+                    state.db(),
+                    &full_session.course_id,
+                    &full_session.id,
+                    hard_deadline,
+                    now_primitive(),
+                )
+                .await
+                .context("Failed to expire session after auto-submit failure")?;
+                closed += 1;
+            }
+        }
     }
 
-    tracing::info!(closed_sessions = closed, "Closed expired sessions");
+    tracing::info!(closed_sessions = closed, auto_submitted, "Closed expired sessions");
     metrics::counter!("expired_sessions_closed_total").increment(closed as u64);
+    metrics::counter!("auto_submit_total").increment(auto_submitted as u64);
 
     Ok(())
 }

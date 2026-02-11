@@ -8,7 +8,7 @@ use super::types::{
     AdminSettings, AiSettings, ApiSettings, ConfigError, CorsSettings, CourseSettings,
     DatabaseSettings, DatalabSettings, ExamSettings, RedisSettings, RuntimeSettings, S3Settings,
     SecuritySettings, ServerHost, ServerPort, ServerSettings, Settings, StorageSettings,
-    TaskBankSettings, TelemetrySettings,
+    TaskBankSettings, TelegramSettings, TelemetrySettings,
 };
 
 impl Settings {
@@ -121,6 +121,13 @@ impl Settings {
             "ADDITIONAL_MATERIALS_PDF",
             "tasks/Sviridov_tasks/ocr_output/Sviridov_tasks/addition.pdf",
         );
+        let telegram_enabled =
+            env_optional("TELEGRAM_BOT_ENABLED").map(|value| parse_bool(&value)).unwrap_or(false);
+        let telegram_token = env_or_default("TG_TOKEN", "");
+        let telegram_poll_timeout_seconds = parse_u64(
+            "TELEGRAM_POLL_TIMEOUT_SECONDS",
+            env_or_default("TELEGRAM_POLL_TIMEOUT_SECONDS", "30"),
+        )?;
 
         let log_level = env_or_default("PICRETE_LOG_LEVEL", "info");
         let json = env_optional("PICRETE_LOG_JSON")
@@ -201,6 +208,11 @@ impl Settings {
                 media_root: task_bank_media_root,
                 additional_materials_pdf,
             },
+            telegram: TelegramSettings {
+                enabled: telegram_enabled,
+                token: telegram_token,
+                poll_timeout_seconds: telegram_poll_timeout_seconds,
+            },
             telemetry: TelemetrySettings { log_level, json, prometheus_enabled },
         };
 
@@ -270,6 +282,10 @@ impl Settings {
 
     pub(crate) fn task_bank(&self) -> &TaskBankSettings {
         &self.task_bank
+    }
+
+    pub(crate) fn telegram(&self) -> &TelegramSettings {
+        &self.telegram
     }
 
     pub(crate) fn telemetry(&self) -> &TelemetrySettings {
@@ -375,6 +391,9 @@ impl Settings {
         }
         if self.admin.first_superuser_password.is_empty() {
             return Err(ConfigError::MissingSecret("FIRST_SUPERUSER_PASSWORD"));
+        }
+        if self.telegram.enabled && self.telegram.token.is_empty() {
+            return Err(ConfigError::MissingSecret("TG_TOKEN"));
         }
 
         Ok(())

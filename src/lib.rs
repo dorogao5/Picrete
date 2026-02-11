@@ -95,3 +95,30 @@ pub async fn run_worker() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+pub async fn run_telegram_bot() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+
+    let settings = Settings::load()?;
+    telemetry::init_tracing(&settings)?;
+    core::metrics::init(&settings)?;
+
+    let db_pool = db::init_pool(&settings).await?;
+    db::run_migrations(&db_pool).await?;
+
+    let redis = RedisHandle::new(settings.redis().redis_url());
+    redis.connect().await?;
+    tracing::info!("Redis connected successfully");
+
+    let storage = StorageService::from_settings(&settings).await?;
+    let state = AppState::new(settings, db_pool, redis.clone(), storage);
+
+    let result = services::telegram_bot::run(state).await;
+
+    redis.disconnect().await;
+    tracing::info!("Redis disconnected");
+
+    result?;
+
+    Ok(())
+}

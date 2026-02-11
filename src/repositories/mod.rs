@@ -10,5 +10,8 @@ pub(crate) mod sessions;
 pub(crate) mod submissions;
 pub(crate) mod task_bank;
 pub(crate) mod task_types;
+pub(crate) mod telegram_links;
+pub(crate) mod telegram_offsets;
+pub(crate) mod telegram_sessions;
 pub(crate) mod trainer_sets;
 pub(crate) mod users;

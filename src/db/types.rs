@@ -79,6 +79,14 @@ pub(crate) enum OcrImageStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "uploadsource", rename_all = "lowercase")]
+pub(crate) enum UploadSource {
+    Web,
+    Telegram,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "ocroverallstatus", rename_all = "snake_case")]
 pub(crate) enum OcrOverallStatus {

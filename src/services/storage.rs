@@ -95,6 +95,11 @@ impl StorageService {
 
         Ok((size, hash_hex))
     }
+
+    pub(crate) async fn delete_object(&self, key: &str) -> anyhow::Result<()> {
+        self.client.delete_object().bucket(&self.bucket).key(key).send().await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

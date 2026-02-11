@@ -143,6 +143,117 @@ async fn student_can_submit_exam() {
 }
 
 #[tokio::test]
+async fn uploaded_images_are_persistent_and_deletable() {
+    let ctx = test_support::setup_test_context().await;
+
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "teacher041", "Teacher User", "teacher-pass")
+            .await;
+    let student =
+        test_support::insert_user(ctx.state.db(), "student042", "Student User", "student-pass")
+            .await;
+    let course = test_support::create_course_with_teacher(
+        ctx.state.db(),
+        "images-101",
+        "Images 101",
+        &teacher.id,
+    )
+    .await;
+    test_support::add_course_role(ctx.state.db(), &course.id, &student.id, CourseRole::Student)
+        .await;
+
+    let teacher_token = test_support::bearer_token(&teacher.id, ctx.state.settings());
+    let student_token = test_support::bearer_token(&student.id, ctx.state.settings());
+
+    let exam_id = create_published_exam(ctx.app.clone(), &teacher_token, &course.id).await;
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/submissions/exams/{exam_id}/enter", course.id),
+            Some(&student_token),
+            None,
+        ))
+        .await
+        .expect("enter exam");
+    let session = test_support::read_json(response).await;
+    let session_id = session["id"].as_str().expect("session id");
+
+    let (submission_id, _) = super::insert_submission_with_one_image(
+        ctx.state.db(),
+        &course.id,
+        session_id,
+        &student.id,
+        &exam_id,
+    )
+    .await;
+    let image_id_2 = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO submission_images (
+            id, course_id, submission_id, filename, file_path, file_size, mime_type, order_index, is_processed, uploaded_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+    )
+    .bind(&image_id_2)
+    .bind(&course.id)
+    .bind(&submission_id)
+    .bind("page2.png")
+    .bind(format!("submissions/{session_id}/{image_id_2}_page2.png"))
+    .bind(2048_i64)
+    .bind("image/png")
+    .bind(1_i32)
+    .bind(false)
+    .bind(crate::core::time::primitive_now_utc())
+    .execute(ctx.state.db())
+    .await
+    .expect("insert second image");
+
+    let list_uri =
+        format!("/api/v1/courses/{}/submissions/sessions/{session_id}/images", course.id);
+    let listed = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(Method::GET, &list_uri, Some(&student_token), None))
+        .await
+        .expect("list session images");
+    assert_eq!(listed.status(), StatusCode::OK);
+    let payload = test_support::read_json(listed).await;
+    let items = payload["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2, "response: {payload}");
+    assert_eq!(items[0]["order_index"], 0);
+    assert_eq!(items[1]["order_index"], 1);
+    assert_eq!(items[0]["upload_source"], "web");
+
+    let image_id = items[0]["id"].as_str().expect("image id");
+    let delete_uri = format!(
+        "/api/v1/courses/{}/submissions/sessions/{session_id}/images/{image_id}",
+        course.id
+    );
+    let deleted = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::DELETE,
+            &delete_uri,
+            Some(&student_token),
+            None,
+        ))
+        .await
+        .expect("delete image");
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+    let listed_after = ctx
+        .app
+        .oneshot(test_support::json_request(Method::GET, &list_uri, Some(&student_token), None))
+        .await
+        .expect("list images after delete");
+    assert_eq!(listed_after.status(), StatusCode::OK);
+    let after_payload = test_support::read_json(listed_after).await;
+    let after_items = after_payload["items"].as_array().expect("items array");
+    assert_eq!(after_items.len(), 1, "response: {after_payload}");
+}
+
+#[tokio::test]
 async fn submit_exam_does_not_downgrade_processing_submission() {
     let ctx = test_support::setup_test_context().await;
 

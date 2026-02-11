@@ -1,11 +1,12 @@
 use sqlx::PgPool;
 
 use crate::db::models::SubmissionImage;
+use crate::db::types::UploadSource;
 
 pub(crate) const COLUMNS: &str = "\
     id, course_id, submission_id, filename, file_path, file_size, mime_type, \
     is_processed, ocr_status, ocr_text, ocr_markdown, ocr_chunks, ocr_model, \
-    ocr_completed_at, ocr_error, ocr_request_id, quality_score, order_index, \
+    ocr_completed_at, ocr_error, ocr_request_id, quality_score, order_index, upload_source, \
     perceptual_hash, uploaded_at, processed_at";
 
 pub(crate) async fn find_by_id(
@@ -62,8 +63,8 @@ pub(crate) async fn list_by_submissions(
     .await
 }
 
-pub(crate) async fn count_by_submission(
-    pool: &PgPool,
+pub(crate) async fn count_by_submission_with_executor(
+    executor: impl sqlx::PgExecutor<'_>,
     course_id: &str,
     submission_id: &str,
 ) -> Result<i64, sqlx::Error> {
@@ -74,13 +75,31 @@ pub(crate) async fn count_by_submission(
     )
     .bind(course_id)
     .bind(submission_id)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 
+pub(crate) async fn next_order_index_for_submission(
+    executor: impl sqlx::PgExecutor<'_>,
+    course_id: &str,
+    submission_id: &str,
+) -> Result<i32, sqlx::Error> {
+    let next = sqlx::query_scalar::<_, i32>(
+        "SELECT COALESCE(MAX(order_index), -1) + 1
+         FROM submission_images
+         WHERE course_id = $1 AND submission_id = $2",
+    )
+    .bind(course_id)
+    .bind(submission_id)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(next)
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn insert(
-    pool: &PgPool,
+pub(crate) async fn insert_with_executor(
+    executor: impl sqlx::PgExecutor<'_>,
     id: &str,
     course_id: &str,
     submission_id: &str,
@@ -89,13 +108,14 @@ pub(crate) async fn insert(
     file_size: i64,
     mime_type: &str,
     order_index: i32,
+    upload_source: UploadSource,
     uploaded_at: time::PrimitiveDateTime,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO submission_images (
             id, course_id, submission_id, filename, file_path, file_size, mime_type,
-            order_index, is_processed, uploaded_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+            order_index, upload_source, is_processed, uploaded_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
     )
     .bind(id)
     .bind(course_id)
@@ -105,11 +125,32 @@ pub(crate) async fn insert(
     .bind(file_size)
     .bind(mime_type)
     .bind(order_index)
+    .bind(upload_source)
     .bind(false)
     .bind(uploaded_at)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
+}
+
+pub(crate) async fn delete_by_submission_and_id(
+    pool: &PgPool,
+    course_id: &str,
+    submission_id: &str,
+    id: &str,
+) -> Result<Option<SubmissionImage>, sqlx::Error> {
+    sqlx::query_as::<_, SubmissionImage>(&format!(
+        "DELETE FROM submission_images
+         WHERE course_id = $1
+           AND submission_id = $2
+           AND id = $3
+         RETURNING {COLUMNS}"
+    ))
+    .bind(course_id)
+    .bind(submission_id)
+    .bind(id)
+    .fetch_optional(pool)
+    .await
 }
 
 pub(crate) async fn mark_ocr_processing(

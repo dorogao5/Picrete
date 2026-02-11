@@ -32,7 +32,10 @@ async fn migrations_apply_and_tables_exist() -> anyhow::Result<()> {
     let pool =
         sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&database_url).await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    let migrations_dir =
+        std::env::var("PICRETE_MIGRATIONS_DIR").unwrap_or_else(|_| "migrations".to_string());
+    let migrator = sqlx::migrate::Migrator::new(std::path::Path::new(&migrations_dir)).await?;
+    migrator.run(&pool).await?;
 
     let tables = [
         "users",
@@ -43,6 +46,9 @@ async fn migrations_apply_and_tables_exist() -> anyhow::Result<()> {
         "submissions",
         "submission_images",
         "submission_scores",
+        "telegram_user_links",
+        "telegram_selected_sessions",
+        "telegram_bot_offsets",
     ];
 
     for table in tables {

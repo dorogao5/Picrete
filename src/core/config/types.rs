@@ -17,6 +17,7 @@ pub(crate) struct Settings {
     pub(super) admin: AdminSettings,
     pub(super) course: CourseSettings,
     pub(super) task_bank: TaskBankSettings,
+    pub(super) telegram: TelegramSettings,
     pub(super) telemetry: TelemetrySettings,
 }
 
@@ -126,6 +127,13 @@ pub(crate) struct TaskBankSettings {
     pub(crate) root: String,
     pub(crate) media_root: String,
     pub(crate) additional_materials_pdf: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TelegramSettings {
+    pub(crate) enabled: bool,
+    pub(crate) token: String,
+    pub(crate) poll_timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

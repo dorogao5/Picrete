@@ -3,15 +3,14 @@ use axum::{
     Json,
 };
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::api::errors::ApiError;
 use crate::api::guards::{require_course_role, CurrentUser};
 use crate::core::state::AppState;
-use crate::db::types::{CourseRole, SessionStatus, SubmissionStatus};
+use crate::db::types::{CourseRole, SessionStatus};
 use crate::repositories;
-use crate::schemas::submission::{format_primitive, SubmissionNextStep, SubmissionResponse};
-use crate::services::work_processing::WorkProcessingSettings;
+use crate::schemas::submission::{format_primitive, SubmissionResponse};
+use crate::services::submission_finalize::{finalize_submission, FinalizeMode};
 use crate::services::work_timing::submit_grace_period_seconds;
 
 pub(in crate::api::submissions) async fn submit_exam(
@@ -38,82 +37,24 @@ pub(in crate::api::submissions) async fn submit_exam(
         return Err(ApiError::BadRequest("WORK_DEADLINE_PASSED".to_string()));
     }
 
-    let max_score =
-        repositories::exams::max_score_for_exam(state.db(), &course_id, &session.exam_id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to fetch max score"))?;
-    let submission_id = Uuid::new_v4().to_string();
-    repositories::submissions::create_if_absent(
-        state.db(),
-        &submission_id,
-        &course_id,
-        &session_id,
-        &session.student_id,
-        SubmissionStatus::Uploaded,
-        max_score,
-        now,
-        now,
-    )
-    .await
-    .map_err(|e| ApiError::internal(e, "Failed to create submission"))?;
-
-    let submission =
-        repositories::submissions::find_by_session(state.db(), &course_id, &session_id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to refresh submission"))?
-            .ok_or_else(|| ApiError::Internal("Submission missing".to_string()))?;
-
-    let exam =
-        crate::api::submissions::helpers::fetch_exam(state.db(), &course_id, &session.exam_id)
-            .await?;
-    let processing = WorkProcessingSettings::from_exam_settings_strict(&exam.settings.0)
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-
-    let images =
-        crate::api::submissions::helpers::fetch_images(state.db(), &course_id, &submission.id)
-            .await?;
-
-    repositories::sessions::submit(state.db(), &course_id, &session_id, now)
+    let finalized = finalize_submission(&state, &session, FinalizeMode::ManualSubmit, now)
         .await
-        .map_err(|e| ApiError::internal(e, "Failed to update session"))?;
+        .map_err(|e| ApiError::internal(e, "Failed to finalize submission"))?;
+    let base = crate::api::submissions::helpers::to_submission_response(
+        finalized.submission,
+        finalized.images,
+        finalized.scores,
+    );
 
-    repositories::submissions::configure_pipeline_after_submit(
-        state.db(),
-        &course_id,
-        &session_id,
-        processing.ocr_enabled,
-        now,
-    )
-    .await
-    .map_err(|e| ApiError::internal(e, "Failed to update submission"))?;
-
-    let submission =
-        repositories::submissions::find_by_session(state.db(), &course_id, &session_id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to refresh submission"))?
-            .ok_or_else(|| ApiError::Internal("Submission missing".to_string()))?;
-
-    let scores =
-        crate::api::submissions::helpers::fetch_scores(state.db(), &course_id, &submission.id)
-            .await?;
-
-    let base = crate::api::submissions::helpers::to_submission_response(submission, images, scores);
-    let next_step = if processing.ocr_enabled {
-        SubmissionNextStep::OcrReview
-    } else {
-        SubmissionNextStep::Result
-    };
     tracing::info!(
         course_id = %course_id,
         session_id = %session_id,
         student_id = %user.id,
-        ocr_enabled = processing.ocr_enabled,
-        llm_precheck_enabled = processing.llm_precheck_enabled,
-        next_step = ?next_step,
+        next_step = ?finalized.next_step,
         "Submission accepted and next step resolved"
     );
 
-    Ok(Json(crate::api::submissions::helpers::with_next_step(base, next_step)))
+    Ok(Json(crate::api::submissions::helpers::with_next_step(base, finalized.next_step)))
 }
 
 pub(in crate::api::submissions) async fn get_session_result(

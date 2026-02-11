@@ -1,5 +1,6 @@
 use axum::{
     extract::{Multipart, Path, Query, State},
+    http::StatusCode,
     Json,
 };
 use time::OffsetDateTime;
@@ -10,7 +11,7 @@ use crate::api::guards::{require_course_role, CurrentUser};
 use crate::api::validation::validate_image_upload;
 use crate::core::state::AppState;
 use crate::db::types::{CourseRole, SessionStatus};
-use crate::repositories;
+use crate::services::submission_images::SubmissionImagesService;
 
 pub(in crate::api::submissions) async fn presigned_upload_url(
     Path((course_id, session_id)): Path<(String, String)>,
@@ -89,30 +90,9 @@ pub(in crate::api::submissions) async fn upload_image(
         return Err(ApiError::BadRequest("Session has expired".to_string()));
     }
 
-    let storage = state.storage().ok_or_else(|| {
-        ApiError::ServiceUnavailable(
-            "S3 storage is not configured. Please configure Yandex Object Storage.".to_string(),
-        )
-    })?;
-    let submission_id =
-        crate::api::submissions::helpers::ensure_submission(state.db(), &session).await?;
-
-    let current_images =
-        repositories::images::count_by_submission(state.db(), &course_id, &submission_id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to count submission images"))?;
-
-    let max_images = state.settings().storage().max_images_per_submission as i64;
-    if current_images >= max_images {
-        return Err(ApiError::BadRequest(format!(
-            "Maximum number of images per submission exceeded ({max_images})"
-        )));
-    }
-
     let mut file_bytes: Option<Vec<u8>> = None;
     let mut filename: Option<String> = None;
     let mut content_type: Option<String> = None;
-    let mut order_index: Option<i32> = None;
     let max_bytes = state.settings().storage().max_upload_size_mb * 1024 * 1024;
 
     while let Some(mut field) = multipart
@@ -140,23 +120,14 @@ pub(in crate::api::submissions) async fn upload_image(
                 bytes.extend_from_slice(&chunk);
             }
             file_bytes = Some(bytes);
-        } else if name == "order_index" {
-            let text = field
-                .text()
-                .await
-                .map_err(|_| ApiError::BadRequest("Invalid order index".to_string()))?;
-            order_index = Some(text.parse::<i32>().map_err(|_| {
-                ApiError::BadRequest("order_index must be a valid integer".to_string())
-            })?);
         }
+        // Ignore legacy client-provided order_index, server assigns order.
     }
 
     let file_bytes =
         file_bytes.ok_or_else(|| ApiError::BadRequest("File is required".to_string()))?;
     let filename = filename.unwrap_or_else(|| "image.jpg".to_string());
     let content_type = content_type.unwrap_or_else(|| "application/octet-stream".to_string());
-    let order_index =
-        order_index.ok_or_else(|| ApiError::BadRequest("order_index is required".to_string()))?;
 
     validate_image_upload(
         &filename,
@@ -171,37 +142,105 @@ pub(in crate::api::submissions) async fn upload_image(
         )));
     }
 
-    let image_id = Uuid::new_v4().to_string();
-    let key = format!(
-        "submissions/{}/{}/{}_{}",
-        course_id,
-        session_id,
-        image_id,
-        crate::api::submissions::helpers::sanitized_filename(&filename)
-    );
-
-    let (file_size, _hash) = storage
-        .upload_bytes(&key, &content_type, file_bytes)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to upload file to S3"))?;
-
-    repositories::images::insert(
-        state.db(),
-        &image_id,
-        &course_id,
-        &submission_id,
+    let image = SubmissionImagesService::upload_from_web(
+        &state,
+        &session,
         &filename,
-        &key,
-        file_size,
         &content_type,
-        order_index,
-        crate::api::submissions::helpers::now_primitive(),
+        file_bytes,
     )
     .await
-    .map_err(|e| ApiError::internal(e, "Failed to store image metadata"))?;
+    .map_err(map_upload_service_error)?;
 
     Ok(Json(serde_json::json!({
         "message": "File uploaded successfully",
-        "image_id": image_id
+        "image_id": image.id,
+        "image": {
+            "id": image.id,
+            "filename": image.filename,
+            "mime_type": image.mime_type,
+            "file_size": image.file_size,
+            "order_index": image.order_index,
+            "upload_source": image.upload_source,
+            "uploaded_at": image.uploaded_at,
+            "view_url": image.view_url,
+        }
     })))
+}
+
+pub(in crate::api::submissions) async fn list_session_images(
+    Path((course_id, session_id)): Path<(String, String)>,
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
+
+    let session =
+        crate::api::submissions::helpers::fetch_session(state.db(), &course_id, &session_id)
+            .await?;
+    if session.student_id != user.id {
+        return Err(ApiError::Forbidden("Access denied"));
+    }
+
+    let images = SubmissionImagesService::list_for_session(&state, &session)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to list session images"))?;
+
+    Ok(Json(serde_json::json!({
+        "items": images.into_iter().map(|image| serde_json::json!({
+            "id": image.id,
+            "filename": image.filename,
+            "mime_type": image.mime_type,
+            "file_size": image.file_size,
+            "order_index": image.order_index,
+            "upload_source": image.upload_source,
+            "uploaded_at": image.uploaded_at,
+            "view_url": image.view_url,
+        })).collect::<Vec<_>>()
+    })))
+}
+
+pub(in crate::api::submissions) async fn delete_session_image(
+    Path((course_id, session_id, image_id)): Path<(String, String, String)>,
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+) -> Result<StatusCode, ApiError> {
+    require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
+
+    let session =
+        crate::api::submissions::helpers::fetch_session(state.db(), &course_id, &session_id)
+            .await?;
+    if session.student_id != user.id {
+        return Err(ApiError::Forbidden("Access denied"));
+    }
+
+    let (_, session_status, _) =
+        crate::api::submissions::helpers::enforce_deadline(&session, state.db()).await?;
+    if session_status != SessionStatus::Active {
+        return Err(ApiError::Conflict("Cannot delete images for inactive session".to_string()));
+    }
+
+    let deleted = SubmissionImagesService::delete_for_session(&state, &session, &image_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to delete session image"))?;
+
+    if !deleted {
+        return Err(ApiError::NotFound("Image not found".to_string()));
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn map_upload_service_error(error: anyhow::Error) -> ApiError {
+    let text = error.to_string();
+
+    if text.contains("Maximum number of images per submission exceeded") {
+        return ApiError::BadRequest(text);
+    }
+
+    if text.contains("S3 storage is not configured") {
+        return ApiError::ServiceUnavailable(text);
+    }
+
+    ApiError::internal(error, "Failed to upload image")
 }

@@ -26,6 +26,11 @@ pub(crate) async fn init_pool(settings: &Settings) -> Result<PgPool, sqlx::Error
 }
 
 pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
-    sqlx::migrate!("./migrations").run(pool).await?;
+    let migrations_dir =
+        std::env::var("PICRETE_MIGRATIONS_DIR").unwrap_or_else(|_| "migrations".to_string());
+    let migrator = sqlx::migrate::Migrator::new(std::path::Path::new(&migrations_dir))
+        .await
+        .map_err(|error| sqlx::Error::Migrate(Box::new(error)))?;
+    migrator.run(pool).await.map_err(|error| sqlx::Error::Migrate(Box::new(error)))?;
     Ok(())
 }

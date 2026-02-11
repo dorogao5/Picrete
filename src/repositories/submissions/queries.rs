@@ -138,6 +138,23 @@ pub(crate) async fn find_id_by_session(
     .await
 }
 
+pub(crate) async fn find_id_by_session_for_update(
+    executor: impl sqlx::PgExecutor<'_>,
+    course_id: &str,
+    session_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT id
+         FROM submissions
+         WHERE course_id = $1 AND session_id = $2
+         FOR UPDATE",
+    )
+    .bind(course_id)
+    .bind(session_id)
+    .fetch_optional(executor)
+    .await
+}
+
 pub(crate) async fn list_failed_ocr_for_retry(
     pool: &PgPool,
     max_retry_count: i32,

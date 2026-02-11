@@ -9,8 +9,8 @@ pub(crate) use commands::{
     queue_uploaded_for_processing_by_exam, requeue_failed_ocr, skip_llm_precheck_after_ocr,
 };
 pub(crate) use queries::{
-    fetch_one_by_id, find_by_id, find_by_session, find_id_by_session, find_teacher_details,
-    list_by_sessions, list_failed_ocr_for_retry, list_stale_llm_processing,
-    list_stale_ocr_processing,
+    fetch_one_by_id, find_by_id, find_by_session, find_id_by_session,
+    find_id_by_session_for_update, find_teacher_details, list_by_sessions,
+    list_failed_ocr_for_retry, list_stale_llm_processing, list_stale_ocr_processing,
 };
 pub(crate) use types::PreliminaryUpdate;

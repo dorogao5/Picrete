@@ -154,7 +154,7 @@ async fn process_completed_loop(state: AppState, mut shutdown: watch::Receiver<b
 }
 
 async fn close_expired_loop(state: AppState, mut shutdown: watch::Receiver<bool>) {
-    let mut tick = interval(Duration::from_secs(300));
+    let mut tick = interval(Duration::from_secs(30));
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,

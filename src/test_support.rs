@@ -133,16 +133,21 @@ async fn reset_public_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
 }
 
 pub(crate) async fn ensure_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
-    let mut migrator = sqlx::migrate!("./migrations");
+    let migrations_dir =
+        std::env::var("PICRETE_MIGRATIONS_DIR").unwrap_or_else(|_| "migrations".to_string());
+    let mut migrator = sqlx::migrate::Migrator::new(std::path::Path::new(&migrations_dir))
+        .await
+        .map_err(|error| sqlx::Error::Migrate(Box::new(error)))?;
     migrator.set_ignore_missing(true);
-    migrator.run(pool).await.map_err(|e| sqlx::Error::Configuration(e.into()))?;
+    migrator.run(pool).await.map_err(|error| sqlx::Error::Migrate(Box::new(error)))?;
     Ok(())
 }
 
 pub(crate) async fn reset_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "TRUNCATE trainer_set_items, trainer_sets, task_bank_item_images, task_bank_items, \
-         task_bank_sources, submission_scores, submission_images, submissions, exam_sessions, \
+         task_bank_sources, submission_scores, submission_images, telegram_selected_sessions, \
+         telegram_user_links, telegram_bot_offsets, submissions, exam_sessions, \
          task_variants, task_types, exams, course_membership_roles, course_invite_codes, \
          course_memberships, course_identity_policies, courses, users RESTART IDENTITY CASCADE",
     )

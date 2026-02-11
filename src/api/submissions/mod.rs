@@ -2,7 +2,7 @@ pub(crate) mod helpers;
 mod student;
 mod teacher;
 
-use axum::{routing::get, routing::post, Router};
+use axum::{routing::delete, routing::get, routing::post, Router};
 use serde::Deserialize;
 
 use crate::core::state::AppState;
@@ -32,6 +32,8 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/sessions/:session_id/variant", get(student::get_session_variant))
         .route("/sessions/:session_id/presigned-upload-url", post(student::presigned_upload_url))
         .route("/sessions/:session_id/upload", post(student::upload_image))
+        .route("/sessions/:session_id/images", get(student::list_session_images))
+        .route("/sessions/:session_id/images/:image_id", delete(student::delete_session_image))
         .route("/sessions/:session_id/auto-save", post(student::auto_save))
         .route("/sessions/:session_id/submit", post(student::submit_exam))
         .route("/sessions/:session_id/ocr-pages", get(student::get_ocr_pages))

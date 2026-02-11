@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use time::{OffsetDateTime, PrimitiveDateTime};
-use uuid::Uuid;
 
 use crate::api::errors::ApiError;
 pub(crate) use crate::core::time::primitive_now_utc as now_primitive;
 use crate::db::models::{Exam, ExamSession, Submission, TaskType, TaskVariant};
-use crate::db::types::{SessionStatus, SubmissionStatus, WorkKind};
+use crate::db::types::{SessionStatus, WorkKind};
 use crate::repositories;
 use crate::schemas::submission::{
     format_primitive, ExamSessionResponse, SubmissionImageResponse, SubmissionNextStep,
@@ -119,6 +118,7 @@ pub(crate) async fn fetch_images(
             course_id: image.course_id,
             filename: image.filename,
             order_index: image.order_index,
+            upload_source: image.upload_source,
             file_size: image.file_size,
             mime_type: image.mime_type,
             is_processed: image.is_processed,
@@ -128,6 +128,7 @@ pub(crate) async fn fetch_images(
             ocr_chunks: image.ocr_chunks.map(|value| value.0),
             quality_score: image.quality_score,
             uploaded_at: format_primitive(image.uploaded_at),
+            view_url: None,
         })
         .collect())
 }
@@ -254,44 +255,4 @@ pub(crate) fn sanitized_filename(name: &str) -> String {
     } else {
         sanitized
     }
-}
-
-pub(crate) async fn ensure_submission(
-    pool: &sqlx::PgPool,
-    session: &ExamSession,
-) -> Result<String, ApiError> {
-    let existing_id =
-        repositories::submissions::find_id_by_session(pool, &session.course_id, &session.id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?;
-
-    if let Some(id) = existing_id {
-        return Ok(id);
-    }
-
-    let max_score =
-        repositories::exams::max_score_for_exam(pool, &session.course_id, &session.exam_id)
-            .await
-            .map_err(|e| ApiError::internal(e, "Failed to fetch max score"))?;
-
-    let now = now_primitive();
-    let id = Uuid::new_v4().to_string();
-    repositories::submissions::create_if_absent(
-        pool,
-        &id,
-        &session.course_id,
-        &session.id,
-        &session.student_id,
-        SubmissionStatus::Uploaded,
-        max_score,
-        now,
-        now,
-    )
-    .await
-    .map_err(|e| ApiError::internal(e, "Failed to create submission"))?;
-
-    repositories::submissions::find_id_by_session(pool, &session.course_id, &session.id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to fetch submission"))?
-        .ok_or_else(|| ApiError::Internal("Submission missing after creation".to_string()))
 }

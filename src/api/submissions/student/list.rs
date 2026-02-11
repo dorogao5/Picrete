@@ -75,6 +75,7 @@ pub(in crate::api::submissions) async fn get_my_submissions(
                 course_id: image.course_id,
                 filename: image.filename,
                 order_index: image.order_index,
+                upload_source: image.upload_source,
                 file_size: image.file_size,
                 mime_type: image.mime_type,
                 is_processed: image.is_processed,
@@ -84,6 +85,7 @@ pub(in crate::api::submissions) async fn get_my_submissions(
                 ocr_chunks: None,
                 quality_score: image.quality_score,
                 uploaded_at: format_primitive(image.uploaded_at),
+                view_url: None,
             },
         );
     }
