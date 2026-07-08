@@ -8,7 +8,7 @@ use crate::core::time::{format_primitive, primitive_now_utc};
 use crate::db::types::CourseRole;
 use crate::repositories;
 use crate::schemas::course::{
-    CourseCreate, CourseResponse, CourseUpdate, IdentityPolicyResponse,
+    CourseCreate, CourseMemberAssignRequest, CourseResponse, CourseUpdate, IdentityPolicyResponse,
     IdentityPolicyUpdateRequest, InviteCodeResponse, InviteRotateRequest, JoinCourseRequest,
     JoinCourseResponse, MembershipResponse,
 };
@@ -18,6 +18,7 @@ pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_courses).post(create_course))
         .route("/:course_id", axum::routing::patch(update_course).delete(delete_course))
+        .route("/:course_id/memberships", axum::routing::post(assign_course_member))
         .route("/:course_id/invite-codes/rotate", axum::routing::post(rotate_invite_code))
         .route("/:course_id/identity-policy", axum::routing::patch(update_identity_policy))
         .route("/join", axum::routing::post(join_course))
@@ -213,6 +214,69 @@ async fn rotate_invite_code(
         invite_code,
         expires_at: invite.expires_at.map(format_primitive),
         created_at: format_primitive(invite.created_at),
+    }))
+}
+
+async fn assign_course_member(
+    axum::extract::Path(course_id): axum::extract::Path<String>,
+    CurrentAdmin(admin): CurrentAdmin,
+    state: axum::extract::State<AppState>,
+    Json(payload): Json<CourseMemberAssignRequest>,
+) -> Result<Json<JoinCourseResponse>, ApiError> {
+    let course = repositories::courses::find_by_id(state.db(), &course_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch course"))?
+        .ok_or_else(|| ApiError::NotFound("Course not found".to_string()))?;
+
+    let user = repositories::users::find_by_id(state.db(), &payload.user_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to fetch user"))?
+        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+
+    if !user.is_active {
+        return Err(ApiError::BadRequest("Cannot assign an inactive user to a course".to_string()));
+    }
+
+    let now = primitive_now_utc();
+    let membership_id = repositories::course_memberships::ensure_membership_with_role(
+        state.db(),
+        repositories::course_memberships::EnsureMembershipParams {
+            course_id: &course.id,
+            user_id: &user.id,
+            invited_by: Some(&admin.id),
+            identity_payload: payload.identity_payload,
+            role: payload.role,
+            joined_at: now,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to assign course role"))?;
+
+    let membership =
+        repositories::course_memberships::find_for_user_course(state.db(), &user.id, &course.id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to fetch assigned membership"))?
+            .ok_or_else(|| ApiError::Internal("Membership missing after assignment".to_string()))?;
+
+    tracing::info!(
+        admin_id = %admin.id,
+        user_id = %user.id,
+        course_id = %course.id,
+        role = ?payload.role,
+        action = "course_member_assign",
+        "Admin assigned course role"
+    );
+
+    Ok(Json(JoinCourseResponse {
+        membership: MembershipResponse {
+            membership_id,
+            course_id: membership.course_id,
+            course_slug: membership.course_slug,
+            course_title: membership.course_title,
+            status: membership.status,
+            joined_at: format_primitive(membership.joined_at),
+            roles: membership.roles,
+        },
     }))
 }
 

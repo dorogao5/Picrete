@@ -1,4 +1,5 @@
 use axum::{
+    extract::DefaultBodyLimit,
     http::header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, ORIGIN},
     http::{HeaderName, Method, Request, Response},
     routing::get,
@@ -34,6 +35,10 @@ pub(crate) fn router(state: AppState) -> Router {
 
     let cors = build_cors_layer(state.settings());
     let api_v1_prefix = state.settings().api().api_v1_str.clone();
+    // Axum по умолчанию ограничивает тело запроса 2MB — меньше, чем MAX_UPLOAD_SIZE_MB,
+    // из-за чего загрузка фото падала до проверки лимита. +1MB на multipart-обвязку.
+    let body_limit_bytes =
+        (state.settings().storage().max_upload_size_mb as usize + 1) * 1024 * 1024;
     let api_v1 = Router::new()
         .nest("/auth", auth::router())
         .nest("/users", users::router())
@@ -42,7 +47,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .nest("/courses/:course_id/submissions", submissions::router())
         .nest("/courses/:course_id/task-bank", task_bank::router())
         .nest("/courses/:course_id/trainer", trainer::router())
-        .nest("/courses/:course_id/materials", materials::router());
+        .nest("/courses/:course_id/materials", materials::router())
+        .layer(DefaultBodyLimit::max(body_limit_bytes));
 
     let request_id_header = HeaderName::from_static("x-request-id");
     let request_id_header_for_span = request_id_header.clone();

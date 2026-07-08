@@ -81,6 +81,14 @@ pub(crate) struct JoinCourseRequest {
     pub(crate) identity_payload: serde_json::Value,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct CourseMemberAssignRequest {
+    pub(crate) user_id: String,
+    pub(crate) role: CourseRole,
+    #[serde(default)]
+    pub(crate) identity_payload: serde_json::Value,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct JoinCourseResponse {
     pub(crate) membership: MembershipResponse,
