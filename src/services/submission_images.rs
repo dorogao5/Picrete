@@ -66,6 +66,11 @@ impl SubmissionImagesService {
         let key =
             format!("submissions/{}/{}/{}_{}", session.course_id, session.id, image_id, sanitized);
 
+        // Телефонные JPEG часто хранят пиксели боком + EXIF Orientation. OCR считает
+        // координаты по сырым пикселям, а браузер применяет EXIF — кадры расходятся
+        // и разметка «уезжает». Нормализуем пиксели и убираем EXIF ещё до S3.
+        let file_bytes = normalize_jpeg_orientation(file_bytes, mime_type);
+
         let (file_size, _) = storage
             .upload_bytes(&key, mime_type, file_bytes)
             .await
@@ -317,5 +322,58 @@ fn sanitized_filename(name: &str) -> String {
         "upload".to_string()
     } else {
         sanitized
+    }
+}
+
+/// Разворачивает JPEG по EXIF Orientation и стирает метаданные перекодированием.
+/// При любой ошибке возвращает исходные байты — загрузка важнее нормализации.
+fn normalize_jpeg_orientation(file_bytes: Vec<u8>, mime_type: &str) -> Vec<u8> {
+    if mime_type != "image/jpeg" {
+        return file_bytes;
+    }
+
+    let orientation = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(&file_bytes))
+        .ok()
+        .and_then(|meta| {
+            meta.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .and_then(|field| field.value.get_uint(0))
+        })
+        .unwrap_or(1);
+
+    if orientation <= 1 || orientation > 8 {
+        return file_bytes;
+    }
+
+    let decoded = match image::load_from_memory(&file_bytes) {
+        Ok(img) => img,
+        Err(error) => {
+            tracing::warn!(?error, "Failed to decode JPEG for orientation fix, keeping original");
+            return file_bytes;
+        }
+    };
+
+    let upright = match orientation {
+        2 => decoded.fliph(),
+        3 => decoded.rotate180(),
+        4 => decoded.flipv(),
+        5 => decoded.rotate90().fliph(),
+        6 => decoded.rotate90(),
+        7 => decoded.rotate270().fliph(),
+        8 => decoded.rotate270(),
+        _ => decoded,
+    };
+
+    let mut out = Vec::with_capacity(file_bytes.len());
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90);
+    match upright.write_with_encoder(encoder) {
+        Ok(()) => {
+            tracing::info!(orientation, "Normalized JPEG orientation on upload");
+            out
+        }
+        Err(error) => {
+            tracing::warn!(?error, "Failed to re-encode JPEG after orientation fix, keeping original");
+            file_bytes
+        }
     }
 }
