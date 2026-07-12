@@ -22,6 +22,15 @@ pub(crate) struct AssistantChatThread {
     pub(crate) updated_at: PrimitiveDateTime,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct AssistantChatThreadSummary {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) snapshot_version: String,
+    pub(crate) created_at: PrimitiveDateTime,
+    pub(crate) updated_at: PrimitiveDateTime,
+}
+
 pub(crate) async fn upsert(
     pool: &PgPool,
     course_id: &str,
@@ -76,9 +85,9 @@ pub(crate) async fn list_threads(
     pool: &PgPool,
     course_id: &str,
     user_id: &str,
-) -> Result<Vec<AssistantChatThread>, sqlx::Error> {
-    sqlx::query_as::<_, AssistantChatThread>(
-        "SELECT id, title, messages, snapshot_version, created_at, updated_at
+) -> Result<Vec<AssistantChatThreadSummary>, sqlx::Error> {
+    sqlx::query_as::<_, AssistantChatThreadSummary>(
+        "SELECT id, title, snapshot_version, created_at, updated_at
          FROM assistant_chat_threads
          WHERE course_id = $1 AND user_id = $2
          ORDER BY updated_at DESC LIMIT 30",

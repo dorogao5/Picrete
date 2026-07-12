@@ -20,6 +20,7 @@ pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(status))
         .route("/threads", get(list_threads))
+        .route("/threads/:thread_id", get(get_thread))
         .route("/chat", axum::routing::post(chat))
 }
 
@@ -73,6 +74,15 @@ struct ThreadResponse {
     id: String,
     title: String,
     messages: Value,
+    snapshot_version: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ThreadSummaryResponse {
+    id: String,
+    title: String,
     snapshot_version: String,
     created_at: String,
     updated_at: String,
@@ -186,13 +196,31 @@ async fn list_threads(
     Path(course_id): Path<String>,
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
-) -> Result<Json<Vec<ThreadResponse>>, ApiError> {
+) -> Result<Json<Vec<ThreadSummaryResponse>>, ApiError> {
     require_course_membership(&state, &user, &course_id).await?;
     let threads =
         repositories::course_ai_assistants::list_threads(state.db(), &course_id, &user.id)
             .await
             .map_err(|e| ApiError::internal(e, "Failed to list assistant chats"))?;
-    Ok(Json(threads.into_iter().map(thread_response).collect()))
+    Ok(Json(threads.into_iter().map(thread_summary_response).collect()))
+}
+
+async fn get_thread(
+    Path((course_id, thread_id)): Path<(String, String)>,
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+) -> Result<Json<ThreadResponse>, ApiError> {
+    require_course_membership(&state, &user, &course_id).await?;
+    let thread = repositories::course_ai_assistants::find_thread(
+        state.db(),
+        &thread_id,
+        &course_id,
+        &user.id,
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to load assistant chat"))?
+    .ok_or_else(|| ApiError::NotFound("Диалог не найден".to_string()))?;
+    Ok(Json(thread_response(thread)))
 }
 
 async fn chat(
@@ -282,6 +310,18 @@ fn thread_response(
         id: thread.id,
         title: thread.title,
         messages: thread.messages,
+        snapshot_version: thread.snapshot_version,
+        created_at: format_primitive(thread.created_at),
+        updated_at: format_primitive(thread.updated_at),
+    }
+}
+
+fn thread_summary_response(
+    thread: repositories::course_ai_assistants::AssistantChatThreadSummary,
+) -> ThreadSummaryResponse {
+    ThreadSummaryResponse {
+        id: thread.id,
+        title: thread.title,
         snapshot_version: thread.snapshot_version,
         created_at: format_primitive(thread.created_at),
         updated_at: format_primitive(thread.updated_at),
