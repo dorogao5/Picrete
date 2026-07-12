@@ -1,0 +1,289 @@
+use axum::{
+    extract::{Path, State},
+    http::{header, HeaderMap},
+    routing::{get, put},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::api::errors::ApiError;
+use crate::api::guards::{require_course_membership, CurrentUser};
+use crate::core::state::AppState;
+use crate::core::time::{format_primitive, primitive_now_utc};
+use crate::repositories;
+use crate::services::assistant_chat::AssistantChatService;
+
+pub(crate) fn router() -> Router<AppState> {
+    Router::new()
+        .route("/", get(status))
+        .route("/threads", get(list_threads))
+        .route("/chat", axum::routing::post(chat))
+}
+
+pub(crate) fn internal_router() -> Router<AppState> {
+    Router::new()
+        .route("/course-assistants/:course_id", put(publish_snapshot))
+        .route("/course-options", get(course_options))
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PublishSnapshot {
+    schema_version: u32,
+    version: String,
+    assistant: PublishedAssistant,
+    prompts: Value,
+    reference_sheets: Vec<Value>,
+    published_at: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PublishedAssistant {
+    id: String,
+    name: String,
+    discipline: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AssistantStatus {
+    available: bool,
+    name: Option<String>,
+    discipline: Option<String>,
+    snapshot_version: Option<String>,
+    synced_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatRequest {
+    thread_id: Option<String>,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CourseOption {
+    id: String,
+    title: String,
+    organization: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ThreadResponse {
+    id: String,
+    title: String,
+    messages: Value,
+    snapshot_version: String,
+    created_at: String,
+    updated_at: String,
+}
+
+async fn publish_snapshot(
+    Path(course_id): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PublishSnapshot>,
+) -> Result<Json<Value>, ApiError> {
+    authenticate_studio(&state, &headers)?;
+    if payload.schema_version != 1
+        || payload.version.len() != 64
+        || payload.assistant.id.len() > 64
+        || payload.assistant.name.trim().is_empty()
+        || payload.assistant.name.len() > 256
+        || payload.assistant.discipline.len() > 256
+        || payload.reference_sheets.len() > 200
+        || payload.published_at.len() > 64
+        || payload.prompts.pointer("/tutor/system_prompt").and_then(Value::as_str).is_none()
+    {
+        return Err(ApiError::UnprocessableEntity("Некорректный снимок ассистента".to_string()));
+    }
+    repositories::courses::find_by_id(state.db(), &course_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to validate assistant course"))?
+        .ok_or_else(|| ApiError::NotFound("Курс Picrete не найден".to_string()))?;
+    let snapshot = serde_json::to_value(&payload)
+        .map_err(|e| ApiError::internal(e, "Failed to serialize assistant snapshot"))?;
+    if snapshot.to_string().len() > 1_600_000 {
+        return Err(ApiError::UnprocessableEntity("Снимок ассистента слишком большой".to_string()));
+    }
+    let synced_at = primitive_now_utc();
+    let stored = repositories::course_ai_assistants::upsert(
+        state.db(),
+        &course_id,
+        &payload.assistant.id,
+        payload.assistant.name.trim(),
+        payload.assistant.discipline.trim(),
+        &payload.version,
+        snapshot,
+        synced_at,
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to publish course assistant"))?;
+    tracing::info!(course_id = %course_id, snapshot_version = %stored.snapshot_version, "Studio assistant published");
+    Ok(Json(json!({"ok": true, "synced_at": format_primitive(stored.synced_at)})))
+}
+
+fn authenticate_studio(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let expected = state.settings().studio_integration().token.as_bytes();
+    let provided = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or("")
+        .as_bytes();
+    if expected.is_empty() || Sha256::digest(expected) != Sha256::digest(provided) {
+        return Err(ApiError::Unauthorized("Invalid Studio integration credentials"));
+    }
+    Ok(())
+}
+
+async fn course_options(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<CourseOption>>, ApiError> {
+    authenticate_studio(&state, &headers)?;
+    let rows = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT id, title, organization FROM courses WHERE is_active = TRUE ORDER BY title",
+    )
+    .fetch_all(state.db())
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to list Picrete courses"))?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(id, title, organization)| CourseOption { id, title, organization })
+            .collect(),
+    ))
+}
+
+async fn status(
+    Path(course_id): Path<String>,
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+) -> Result<Json<AssistantStatus>, ApiError> {
+    require_course_membership(&state, &user, &course_id).await?;
+    let assistant = repositories::course_ai_assistants::find(state.db(), &course_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to load course assistant"))?;
+    Ok(Json(match assistant.filter(|item| item.enabled) {
+        Some(item) => AssistantStatus {
+            available: true,
+            name: Some(item.name),
+            discipline: Some(item.discipline),
+            snapshot_version: Some(item.snapshot_version),
+            synced_at: Some(format_primitive(item.synced_at)),
+        },
+        None => AssistantStatus {
+            available: false,
+            name: None,
+            discipline: None,
+            snapshot_version: None,
+            synced_at: None,
+        },
+    }))
+}
+
+async fn list_threads(
+    Path(course_id): Path<String>,
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ThreadResponse>>, ApiError> {
+    require_course_membership(&state, &user, &course_id).await?;
+    let threads =
+        repositories::course_ai_assistants::list_threads(state.db(), &course_id, &user.id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to list assistant chats"))?;
+    Ok(Json(threads.into_iter().map(thread_response).collect()))
+}
+
+async fn chat(
+    Path(course_id): Path<String>,
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+    Json(payload): Json<ChatRequest>,
+) -> Result<Json<ThreadResponse>, ApiError> {
+    require_course_membership(&state, &user, &course_id).await?;
+    let message = payload.message.trim();
+    if message.is_empty() || message.chars().count() > 4_000 {
+        return Err(ApiError::BadRequest(
+            "Сообщение должно содержать от 1 до 4000 символов".to_string(),
+        ));
+    }
+    let rate_key = format!("assistant-chat:{}:{}", course_id, user.id);
+    match state.redis().rate_limit(&rate_key, 12, 60).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(ApiError::TooManyRequests("Слишком много сообщений. Подождите минуту."))
+        }
+        Err(error) => {
+            tracing::error!(%error, "Assistant chat rate limit failed");
+            return Err(ApiError::ServiceUnavailable("Диалог временно недоступен".to_string()));
+        }
+    }
+    let assistant = repositories::course_ai_assistants::find(state.db(), &course_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to load course assistant"))?
+        .filter(|item| item.enabled)
+        .ok_or_else(|| {
+            ApiError::NotFound("Для курса ещё не опубликован ИИ-ассистент".to_string())
+        })?;
+
+    let thread_id = payload.thread_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let existing = repositories::course_ai_assistants::find_thread(
+        state.db(),
+        &thread_id,
+        &course_id,
+        &user.id,
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to load assistant chat"))?;
+    let mut messages = existing
+        .as_ref()
+        .and_then(|thread| thread.messages.as_array().cloned())
+        .unwrap_or_default();
+    messages.push(json!({"role": "user", "content": message}));
+    let service = AssistantChatService::from_settings(state.settings())
+        .map_err(|e| ApiError::internal(e, "Failed to initialize course assistant"))?;
+    let reply = service.reply(&assistant.snapshot, &messages).await.map_err(|error| {
+        tracing::error!(%error, course_id = %course_id, "Course assistant reply failed");
+        ApiError::ServiceUnavailable(
+            "Ассистент не смог ответить. Сообщение не сохранено — повторите попытку.".to_string(),
+        )
+    })?;
+    messages.push(json!({"role": "assistant", "content": reply}));
+    if messages.len() > 60 {
+        messages.drain(0..messages.len() - 60);
+    }
+    let title = existing.as_ref().map(|thread| thread.title.clone()).unwrap_or_else(|| {
+        let mut value = message.chars().take(70).collect::<String>();
+        if message.chars().count() > 70 {
+            value.push('…');
+        }
+        value
+    });
+    let saved = repositories::course_ai_assistants::save_thread(
+        state.db(),
+        &thread_id,
+        &course_id,
+        &user.id,
+        &title,
+        Value::Array(messages),
+        &assistant.snapshot_version,
+        primitive_now_utc(),
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to save assistant chat"))?;
+    Ok(Json(thread_response(saved)))
+}
+
+fn thread_response(
+    thread: repositories::course_ai_assistants::AssistantChatThread,
+) -> ThreadResponse {
+    ThreadResponse {
+        id: thread.id,
+        title: thread.title,
+        messages: thread.messages,
+        snapshot_version: thread.snapshot_version,
+        created_at: format_primitive(thread.created_at),
+        updated_at: format_primitive(thread.updated_at),
+    }
+}

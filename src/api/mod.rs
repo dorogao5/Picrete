@@ -1,3 +1,4 @@
+pub(crate) mod assistant;
 pub(crate) mod auth;
 pub(crate) mod courses;
 pub(crate) mod errors;

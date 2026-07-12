@@ -14,6 +14,7 @@ use tower_http::{
 };
 use tracing::Span;
 
+use crate::api::assistant;
 use crate::api::auth;
 use crate::api::courses;
 use crate::api::exams;
@@ -48,6 +49,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .nest("/courses/:course_id/task-bank", task_bank::router())
         .nest("/courses/:course_id/trainer", trainer::router())
         .nest("/courses/:course_id/materials", materials::router())
+        .nest("/courses/:course_id/assistant", assistant::router())
+        .nest("/internal/studio", assistant::internal_router())
         .layer(DefaultBodyLimit::max(body_limit_bytes));
 
     let request_id_header = HeaderName::from_static("x-request-id");

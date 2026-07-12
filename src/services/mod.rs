@@ -1,4 +1,5 @@
 pub(crate) mod ai_grading;
+pub(crate) mod assistant_chat;
 pub(crate) mod datalab_ocr;
 pub(crate) mod invite_codes;
 pub(crate) mod materials;

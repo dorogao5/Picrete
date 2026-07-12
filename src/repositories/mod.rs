@@ -1,3 +1,4 @@
+pub(crate) mod course_ai_assistants;
 pub(crate) mod course_invites;
 pub(crate) mod course_memberships;
 pub(crate) mod courses;

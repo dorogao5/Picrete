@@ -8,7 +8,7 @@ use super::types::{
     AdminSettings, AiSettings, ApiSettings, ConfigError, CorsSettings, CourseSettings,
     DatabaseSettings, DatalabSettings, ExamSettings, RedisSettings, RuntimeSettings, S3Settings,
     SecuritySettings, ServerHost, ServerPort, ServerSettings, Settings, StorageSettings,
-    TaskBankSettings, TelegramSettings, TelemetrySettings,
+    StudioIntegrationSettings, TaskBankSettings, TelegramSettings, TelemetrySettings,
 };
 
 impl Settings {
@@ -60,6 +60,7 @@ impl Settings {
         let ai_max_tokens = parse_u32("AI_MAX_TOKENS", env_or_default("AI_MAX_TOKENS", "10000"))?;
         let ai_request_timeout =
             parse_u64("AI_REQUEST_TIMEOUT", env_or_default("AI_REQUEST_TIMEOUT", "600"))?;
+        let studio_integration_token = env_or_default("STUDIO_INTEGRATION_TOKEN", "");
 
         let datalab_api_key = env_or_default("DATALAB_API_KEY", "");
         let datalab_base_url = env_or_default("DATALAB_BASE_URL", "https://www.datalab.to/api/v1");
@@ -214,6 +215,7 @@ impl Settings {
                 poll_timeout_seconds: telegram_poll_timeout_seconds,
             },
             telemetry: TelemetrySettings { log_level, json, prometheus_enabled },
+            studio_integration: StudioIntegrationSettings { token: studio_integration_token },
         };
 
         settings.validate()?;
@@ -290,6 +292,10 @@ impl Settings {
 
     pub(crate) fn telemetry(&self) -> &TelemetrySettings {
         &self.telemetry
+    }
+
+    pub(crate) fn studio_integration(&self) -> &StudioIntegrationSettings {
+        &self.studio_integration
     }
 
     pub(crate) fn runtime(&self) -> &RuntimeSettings {

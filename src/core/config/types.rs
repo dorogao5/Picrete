@@ -19,6 +19,7 @@ pub(crate) struct Settings {
     pub(super) task_bank: TaskBankSettings,
     pub(super) telegram: TelegramSettings,
     pub(super) telemetry: TelemetrySettings,
+    pub(super) studio_integration: StudioIntegrationSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +75,11 @@ pub(crate) struct AiSettings {
     pub(crate) ai_model: String,
     pub(crate) ai_max_tokens: u32,
     pub(crate) ai_request_timeout: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StudioIntegrationSettings {
+    pub(crate) token: String,
 }
 
 #[derive(Debug, Clone)]
