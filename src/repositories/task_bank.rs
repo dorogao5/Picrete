@@ -6,6 +6,8 @@ use crate::db::models::{TaskBankItem, TaskBankItemImage, TaskBankSource};
 
 pub(crate) const SOURCE_COLUMNS: &str =
     "id, code, title, version, is_active, created_at, updated_at";
+const ALIASED_SOURCE_COLUMNS: &str =
+    "s.id, s.code, s.title, s.version, s.is_active, s.created_at, s.updated_at";
 pub(crate) const ITEM_COLUMNS: &str = "\
     id, source_id, number, paragraph, topic, text, answer, has_answer, metadata, created_at, \
     updated_at";
@@ -158,29 +160,79 @@ pub(crate) async fn replace_item_images(
     Ok(())
 }
 
-pub(crate) async fn list_sources(pool: &PgPool) -> Result<Vec<TaskBankSource>, sqlx::Error> {
+pub(crate) async fn list_sources_for_course(
+    pool: &PgPool,
+    course_id: &str,
+) -> Result<Vec<TaskBankSource>, sqlx::Error> {
     sqlx::query_as::<_, TaskBankSource>(&format!(
-        "SELECT {SOURCE_COLUMNS}
-         FROM task_bank_sources
-         WHERE is_active = TRUE
-         ORDER BY code"
+        "SELECT {ALIASED_SOURCE_COLUMNS}
+         FROM task_bank_sources s
+         JOIN course_task_bank_sources cs ON cs.source_id = s.id
+         WHERE cs.course_id = $1 AND s.is_active = TRUE
+         ORDER BY s.code"
     ))
+    .bind(course_id)
     .fetch_all(pool)
     .await
 }
 
-pub(crate) async fn find_source_by_code(
+pub(crate) async fn find_source_by_code_for_course(
     pool: &PgPool,
+    course_id: &str,
     code: &str,
 ) -> Result<Option<TaskBankSource>, sqlx::Error> {
     sqlx::query_as::<_, TaskBankSource>(&format!(
-        "SELECT {SOURCE_COLUMNS}
-         FROM task_bank_sources
-         WHERE code = $1 AND is_active = TRUE"
+        "SELECT {ALIASED_SOURCE_COLUMNS}
+         FROM task_bank_sources s
+         JOIN course_task_bank_sources cs ON cs.source_id = s.id
+         WHERE cs.course_id = $1 AND s.code = $2 AND s.is_active = TRUE"
     ))
+    .bind(course_id)
     .bind(code)
     .fetch_optional(pool)
     .await
+}
+
+pub(crate) async fn map_sviridov_to_matching_courses(
+    executor: impl sqlx::PgExecutor<'_>,
+    source_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO course_task_bank_sources (course_id, source_id)
+         SELECT id, $1 FROM courses
+         WHERE LOWER(title) ~ '(неорган|общая.{0,20}хим|infochem)'
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(source_id)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn sync_default_sources_for_course(
+    pool: &PgPool,
+    course_id: &str,
+    course_title: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM course_task_bank_sources cs
+         USING task_bank_sources s
+         WHERE cs.course_id = $1 AND cs.source_id = s.id AND s.code = 'sviridov'",
+    )
+    .bind(course_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO course_task_bank_sources (course_id, source_id)
+         SELECT $1, id FROM task_bank_sources
+         WHERE code = 'sviridov' AND LOWER($2) ~ '(неорган|общая.{0,20}хим|infochem)'
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(course_id)
+    .bind(course_title)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn find_source_by_id(
@@ -198,6 +250,7 @@ pub(crate) async fn find_source_by_id(
 }
 
 pub(crate) struct ListItemsParams {
+    pub(crate) course_id: String,
     pub(crate) source_code: Option<String>,
     pub(crate) paragraph: Option<String>,
     pub(crate) topic: Option<String>,
@@ -222,8 +275,10 @@ pub(crate) async fn list_items(
                 COUNT(*) OVER() AS total_count
          FROM task_bank_items i
          JOIN task_bank_sources s ON s.id = i.source_id
-         WHERE s.is_active = TRUE",
+         JOIN course_task_bank_sources cs ON cs.source_id = s.id
+         WHERE s.is_active = TRUE AND cs.course_id = ",
     );
+    builder.push_bind(params.course_id);
 
     if let Some(source_code) = params.source_code {
         builder.push(" AND s.code = ");
@@ -316,6 +371,56 @@ pub(crate) async fn list_items_with_source_by_ids(
     )
     .bind(item_ids)
     .fetch_all(pool)
+    .await
+}
+
+pub(crate) async fn list_items_with_source_by_ids_for_course(
+    pool: &PgPool,
+    course_id: &str,
+    item_ids: &[String],
+) -> Result<Vec<TaskBankItemWithSourceRow>, sqlx::Error> {
+    if item_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_as::<_, TaskBankItemWithSourceRow>(
+        "SELECT i.id,
+                s.code AS source_code,
+                s.title AS source_title,
+                i.number,
+                i.paragraph,
+                i.topic,
+                i.text,
+                i.answer,
+                i.has_answer
+         FROM task_bank_items i
+         JOIN task_bank_sources s ON s.id = i.source_id
+         JOIN course_task_bank_sources cs ON cs.source_id = s.id
+         WHERE cs.course_id = $1 AND i.id = ANY($2)
+         ORDER BY array_position($2::text[], i.id)",
+    )
+    .bind(course_id)
+    .bind(item_ids)
+    .fetch_all(pool)
+    .await
+}
+
+pub(crate) async fn course_has_item(
+    pool: &PgPool,
+    course_id: &str,
+    item_id: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM task_bank_items i
+            JOIN course_task_bank_sources cs ON cs.source_id = i.source_id
+            WHERE cs.course_id = $1 AND i.id = $2
+         )",
+    )
+    .bind(course_id)
+    .bind(item_id)
+    .fetch_one(pool)
     .await
 }
 

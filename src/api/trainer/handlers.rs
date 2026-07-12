@@ -40,7 +40,7 @@ pub(super) async fn generate_set(
     require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let source = resolve_source(state.db(), &payload.source).await?;
+    let source = resolve_source(state.db(), &course_id, &payload.source).await?;
     let filter_params = build_filter_params(
         &source.id,
         &payload.filters.paragraph,
@@ -142,7 +142,7 @@ pub(super) async fn create_manual_set(
     require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let source = resolve_source(state.db(), &payload.source).await?;
+    let source = resolve_source(state.db(), &course_id, &payload.source).await?;
     let numbers = normalize_numbers(&payload.numbers);
     if numbers.is_empty() {
         return Err(ApiError::BadRequest("numbers must not be empty".to_string()));
@@ -288,10 +288,12 @@ pub(super) async fn delete_set(
 
 async fn resolve_source(
     pool: &sqlx::PgPool,
+    course_id: &str,
     source_code: &str,
 ) -> Result<crate::db::models::TaskBankSource, ApiError> {
-    let source = repositories::task_bank::find_source_by_code(
+    let source = repositories::task_bank::find_source_by_code_for_course(
         pool,
+        course_id,
         &source_code.trim().to_ascii_lowercase(),
     )
     .await

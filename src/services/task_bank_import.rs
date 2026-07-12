@@ -53,7 +53,7 @@ pub(crate) async fn import_sviridov(
     let now = primitive_now_utc();
     let mut tx = pool.begin().await.context("failed to begin import transaction")?;
 
-    repositories::task_bank::upsert_source(
+    let source = repositories::task_bank::upsert_source(
         &mut *tx,
         repositories::task_bank::UpsertSource {
             id: SVIRIDOV_SOURCE_ID,
@@ -66,6 +66,9 @@ pub(crate) async fn import_sviridov(
     )
     .await
     .context("failed to upsert task bank source")?;
+    repositories::task_bank::map_sviridov_to_matching_courses(&mut *tx, &source.id)
+        .await
+        .context("failed to scope task bank source to matching courses")?;
 
     let mut imported_items = 0usize;
     let mut imported_images = 0usize;

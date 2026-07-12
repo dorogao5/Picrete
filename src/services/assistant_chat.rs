@@ -21,9 +21,9 @@ impl AssistantChatService {
                 .timeout(timeout)
                 .build()
                 .context("Failed to build assistant HTTP client")?,
-            api_key: settings.ai().openai_api_key.clone(),
-            base_url: settings.ai().openai_base_url.trim_end_matches('/').to_string(),
-            model: settings.ai().ai_model.clone(),
+            api_key: settings.ai().assistant_api_key.clone(),
+            base_url: settings.ai().assistant_base_url.trim_end_matches('/').to_string(),
+            model: settings.ai().assistant_model.clone(),
         })
     }
 
@@ -51,11 +51,7 @@ impl AssistantChatService {
         let mut messages = vec![json!({"role": "system", "content": system})];
         messages
             .extend(history.iter().rev().take(12).cloned().collect::<Vec<_>>().into_iter().rev());
-        let payload = json!({
-            "model": self.model,
-            "messages": messages,
-            "max_completion_tokens": 1800
-        });
+        let payload = build_payload(&self.model, messages);
         let response = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
@@ -77,6 +73,20 @@ impl AssistantChatService {
     }
 }
 
+fn build_payload(model: &str, messages: Vec<Value>) -> Value {
+    let mut payload = json!({
+        "model": model,
+        "messages": messages,
+    });
+    if model.to_ascii_lowercase().contains("deepseek") {
+        payload["max_tokens"] = json!(1800);
+        payload["thinking"] = json!({"type": "enabled"});
+    } else {
+        payload["max_completion_tokens"] = json!(1800);
+    }
+    payload
+}
+
 fn select_reference_sheets(snapshot: &Value, query: &str, max_chars: usize) -> String {
     let Some(sheets) = snapshot.get("reference_sheets").and_then(Value::as_array) else {
         return String::new();
@@ -84,7 +94,10 @@ fn select_reference_sheets(snapshot: &Value, query: &str, max_chars: usize) -> S
     let query_lower = query.to_lowercase();
     let mut terms = query_lower
         .split(|character: char| !character.is_alphanumeric())
-        .filter(|term| term.chars().count() >= 3)
+        .filter(|term| {
+            term.chars().count() >= 3
+                || matches!(*term, "ph" | "pk" | "пр" | "мо" | "вс" | "ir" | "ик" | "ямр")
+        })
         .take(30)
         .collect::<Vec<_>>();
     terms.sort_unstable();
@@ -112,7 +125,7 @@ fn select_reference_sheets(snapshot: &Value, query: &str, max_chars: usize) -> S
     ranked.sort_by_key(|(score, index, _, _)| (std::cmp::Reverse(*score), *index));
 
     let mut reference = String::new();
-    for (_, _, title, content) in ranked {
+    for (_, _, title, content) in ranked.into_iter().filter(|(score, _, _, _)| *score > 0).take(8) {
         let section =
             format!("\n\n### {}\n{}", if title.is_empty() { "Справочник" } else { title }, content);
         if reference.len() + section.len() > max_chars {
@@ -125,7 +138,7 @@ fn select_reference_sheets(snapshot: &Value, query: &str, max_chars: usize) -> S
 
 #[cfg(test)]
 mod tests {
-    use super::select_reference_sheets;
+    use super::{build_payload, select_reference_sheets};
     use serde_json::json;
 
     #[test]
@@ -137,7 +150,30 @@ mod tests {
             ]
         });
         let selected =
-            select_reference_sheets(&snapshot, "Почему карбонат реагирует с кислотой?", 55);
+            select_reference_sheets(&snapshot, "Почему карбонат реагирует с кислотой?", 2_000);
         assert!(selected.starts_with("\n\n### Карбонаты"));
+        assert!(!selected.contains("### Растворимость"));
+    }
+
+    #[test]
+    fn deepseek_payload_uses_its_native_token_and_thinking_fields() {
+        let payload =
+            build_payload("deepseek-v4-flash", vec![json!({"role": "user", "content": "test"})]);
+
+        assert_eq!(payload["max_tokens"], 1800);
+        assert_eq!(
+            payload.pointer("/thinking/type").and_then(|value| value.as_str()),
+            Some("enabled")
+        );
+        assert!(payload.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn generic_payload_keeps_openai_completion_limit() {
+        let payload = build_payload("gpt-5.5", Vec::new());
+
+        assert_eq!(payload["max_completion_tokens"], 1800);
+        assert!(payload.get("max_tokens").is_none());
+        assert!(payload.get("thinking").is_none());
     }
 }

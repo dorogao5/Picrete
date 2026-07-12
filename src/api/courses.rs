@@ -71,6 +71,10 @@ async fn create_course(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to create creator membership"))?;
 
+    repositories::task_bank::sync_default_sources_for_course(state.db(), &course.id, &course.title)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to scope default task bank sources"))?;
+
     Ok((axum::http::StatusCode::CREATED, Json(CourseResponse::from_db(course))))
 }
 
@@ -120,6 +124,14 @@ async fn update_course(
     let updated = repositories::courses::fetch_one_by_id(state.db(), &course_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch updated course"))?;
+
+    repositories::task_bank::sync_default_sources_for_course(
+        state.db(),
+        &updated.id,
+        &updated.title,
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to update task bank source scope"))?;
 
     Ok(Json(CourseResponse::from_db(updated)))
 }

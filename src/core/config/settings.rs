@@ -57,6 +57,12 @@ impl Settings {
         let openai_api_key = env_or_default("OPENAI_API_KEY", "");
         let openai_base_url = env_or_default("OPENAI_BASE_URL", "");
         let ai_model = env_or_default("AI_MODEL", "gpt-5");
+        let assistant_api_key =
+            env_optional("ASSISTANT_AI_API_KEY").unwrap_or_else(|| openai_api_key.clone());
+        let assistant_base_url =
+            env_optional("ASSISTANT_AI_BASE_URL").unwrap_or_else(|| openai_base_url.clone());
+        let assistant_model =
+            env_optional("ASSISTANT_AI_MODEL").unwrap_or_else(|| ai_model.clone());
         let ai_max_tokens = parse_u32("AI_MAX_TOKENS", env_or_default("AI_MAX_TOKENS", "10000"))?;
         let ai_request_timeout =
             parse_u64("AI_REQUEST_TIMEOUT", env_or_default("AI_REQUEST_TIMEOUT", "600"))?;
@@ -172,6 +178,9 @@ impl Settings {
                 openai_api_key,
                 openai_base_url,
                 ai_model,
+                assistant_api_key,
+                assistant_base_url,
+                assistant_model,
                 ai_max_tokens,
                 ai_request_timeout,
             },

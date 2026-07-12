@@ -191,9 +191,13 @@ pub(in crate::api::exams) async fn add_task_types_from_bank(
         return Err(ApiError::BadRequest("bank_item_ids must not be empty".to_string()));
     }
 
-    let items = repositories::task_bank::list_items_with_source_by_ids(state.db(), &ordered_ids)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to load task bank items"))?;
+    let items = repositories::task_bank::list_items_with_source_by_ids_for_course(
+        state.db(),
+        &course_id,
+        &ordered_ids,
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to load task bank items"))?;
     let by_id = items.into_iter().map(|item| (item.id.clone(), item)).collect::<HashMap<_, _>>();
     if by_id.len() != ordered_ids.len() {
         let invalid_ids = ordered_ids

@@ -45,7 +45,7 @@ pub(super) async fn list_sources(
 ) -> Result<Json<Vec<TaskBankSourceResponse>>, ApiError> {
     require_course_membership(&state, &user, &course_id).await?;
 
-    let sources = repositories::task_bank::list_sources(state.db())
+    let sources = repositories::task_bank::list_sources_for_course(state.db(), &course_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to load task bank sources"))?;
     let response = sources
@@ -75,6 +75,7 @@ pub(super) async fn list_items(
     let rows = repositories::task_bank::list_items(
         state.db(),
         repositories::task_bank::ListItemsParams {
+            course_id: course_id.clone(),
             source_code: query
                 .source
                 .map(|value| value.trim().to_ascii_lowercase())
@@ -151,6 +152,13 @@ pub(super) async fn view_item_image(
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
     require_course_membership(&state, &user, &course_id).await?;
+
+    if !repositories::task_bank::course_has_item(state.db(), &course_id, &item_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to validate task bank item course"))?
+    {
+        return Err(ApiError::NotFound("Task bank image not found".to_string()));
+    }
 
     if let Some(size) = query.size {
         if !matches!(size.as_str(), "thumbnail" | "full") {

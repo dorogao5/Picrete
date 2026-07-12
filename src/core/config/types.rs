@@ -73,6 +73,9 @@ pub(crate) struct AiSettings {
     pub(crate) openai_api_key: String,
     pub(crate) openai_base_url: String,
     pub(crate) ai_model: String,
+    pub(crate) assistant_api_key: String,
+    pub(crate) assistant_base_url: String,
+    pub(crate) assistant_model: String,
     pub(crate) ai_max_tokens: u32,
     pub(crate) ai_request_timeout: u64,
 }
