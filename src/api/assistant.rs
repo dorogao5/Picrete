@@ -45,6 +45,18 @@ struct PublishedAssistant {
     id: String,
     name: String,
     discipline: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    audience: String,
+    #[serde(default)]
+    language: String,
+    #[serde(default)]
+    topics: Vec<String>,
+    #[serde(default)]
+    criteria: Vec<Value>,
+    #[serde(default)]
+    nuances: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -325,5 +337,60 @@ fn thread_summary_response(
         snapshot_version: thread.snapshot_version,
         created_at: format_primitive(thread.created_at),
         updated_at: format_primitive(thread.updated_at),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PublishSnapshot;
+    use serde_json::json;
+
+    fn base_snapshot(assistant: serde_json::Value) -> serde_json::Value {
+        json!({
+            "schema_version": 1,
+            "version": "0".repeat(64),
+            "assistant": assistant,
+            "prompts": {"tutor": {"system_prompt": "Помогайте студенту"}},
+            "reference_sheets": [],
+            "published_at": "2026-07-13T00:00:00Z"
+        })
+    }
+
+    #[test]
+    fn old_snapshots_deserialize_with_empty_profile_defaults() {
+        let snapshot: PublishSnapshot = serde_json::from_value(base_snapshot(json!({
+            "id": "assistant-1",
+            "name": "Ассистент",
+            "discipline": "Химия"
+        })))
+        .expect("legacy snapshot must remain valid");
+
+        assert!(snapshot.assistant.description.is_empty());
+        assert!(snapshot.assistant.audience.is_empty());
+        assert!(snapshot.assistant.topics.is_empty());
+        assert!(snapshot.assistant.criteria.is_empty());
+        assert!(snapshot.assistant.nuances.is_empty());
+    }
+
+    #[test]
+    fn published_profile_fields_survive_snapshot_round_trip() {
+        let snapshot: PublishSnapshot = serde_json::from_value(base_snapshot(json!({
+            "id": "assistant-1",
+            "name": "Практикум",
+            "discipline": "Неорганическая химия",
+            "description": "Первый курс",
+            "audience": "студенты 1 курса",
+            "language": "ru",
+            "topics": ["Растворы"],
+            "criteria": [{"name": "Расчёт", "max_score": 4}],
+            "nuances": ["Не придумывать наблюдения"]
+        })))
+        .expect("extended snapshot must be valid");
+        let encoded = serde_json::to_value(snapshot).expect("snapshot must serialize");
+
+        assert_eq!(encoded["assistant"]["audience"], "студенты 1 курса");
+        assert_eq!(encoded["assistant"]["topics"], json!(["Растворы"]));
+        assert_eq!(encoded["assistant"]["criteria"][0]["max_score"], 4);
+        assert_eq!(encoded["assistant"]["nuances"][0], "Не придумывать наблюдения");
     }
 }

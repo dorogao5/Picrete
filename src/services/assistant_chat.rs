@@ -41,12 +41,11 @@ impl AssistantChatService {
             .and_then(Value::as_str)
             .unwrap_or("");
         let reference = select_reference_sheets(snapshot, query, 40_000);
+        let profile = build_assistant_profile(&assistant);
         let system = format!(
-            "{prompt}\n\nПрофиль курса:\n{}\n\nКанонические материалы курса:{}\n\n\
+            "{prompt}\n\n{profile}\n\nКанонические материалы курса:{reference}\n\n\
              Отвечайте по-русски, если студент не попросил иначе. Не выдумывайте факты вне материалов. \
-             Помогайте понять ход решения: задавайте уточняющие вопросы и не подменяйте самостоятельную работу готовым ответом без объяснения.",
-            serde_json::to_string_pretty(&assistant).unwrap_or_default(),
-            reference,
+             Помогайте понять ход решения: задавайте уточняющие вопросы и не подменяйте самостоятельную работу готовым ответом без объяснения."
         );
         let mut messages = vec![json!({"role": "system", "content": system})];
         messages
@@ -71,6 +70,70 @@ impl AssistantChatService {
             .map(str::to_owned)
             .context("Assistant model returned an empty answer")
     }
+}
+
+fn build_assistant_profile(assistant: &Value) -> String {
+    let text = |key: &str| {
+        assistant.get(key).and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty())
+    };
+    let joined = |key: &str| {
+        assistant
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .filter(|value| !value.is_empty())
+    };
+    let mut lines = vec![
+        "ПРОФИЛЬ КУРСА И ПРЕПОДАВАТЕЛЯ".to_string(),
+        "Это актуальные настройки преподавателя; соблюдайте их во всех ответах.".to_string(),
+    ];
+    for (label, key) in [
+        ("Ассистент", "name"),
+        ("Дисциплина", "discipline"),
+        ("Аудитория", "audience"),
+        ("Язык", "language"),
+        ("Назначение", "description"),
+    ] {
+        if let Some(value) = text(key) {
+            lines.push(format!("{label}: {value}"));
+        }
+    }
+    if let Some(value) = joined("topics") {
+        lines.push(format!("Темы курса: {value}"));
+    }
+    if let Some(criteria) =
+        assistant.get("criteria").and_then(Value::as_array).filter(|v| !v.is_empty())
+    {
+        lines.push("Критерии оценивания:".to_string());
+        lines.extend(criteria.iter().map(|criterion| {
+            let name = criterion.get("name").and_then(Value::as_str).unwrap_or("Критерий");
+            let score = criterion.get("max_score").map(Value::to_string);
+            let description = criterion
+                .get("description")
+                .and_then(Value::as_str)
+                .filter(|v| !v.trim().is_empty());
+            let mut parts = vec![name.trim().to_string()];
+            if let Some(score) = score {
+                parts.push(format!("максимум {score} балла"));
+            }
+            if let Some(description) = description {
+                parts.push(description.trim().to_string());
+            }
+            format!("- {}", parts.join(" — "))
+        }));
+    }
+    if let Some(value) = joined("nuances") {
+        lines.push(format!("Требования преподавателя: {value}"));
+    }
+    lines.join("\n")
 }
 
 fn build_payload(model: &str, messages: Vec<Value>) -> Value {
@@ -115,9 +178,9 @@ fn select_reference_sheets(snapshot: &Value, query: &str, max_chars: usize) -> S
             let content_lower = content.to_lowercase();
             let score = terms.iter().fold(0_u32, |score, term| {
                 score
-                    + if title_lower.contains(term) { 8 } else { 0 }
-                    + if description_lower.contains(term) { 3 } else { 0 }
-                    + if content_lower.contains(term) { 1 } else { 0 }
+                    + if contains_search_term(&title_lower, term) { 8 } else { 0 }
+                    + if contains_search_term(&description_lower, term) { 3 } else { 0 }
+                    + if contains_search_term(&content_lower, term) { 1 } else { 0 }
             });
             (score, index, title, content)
         })
@@ -136,9 +199,22 @@ fn select_reference_sheets(snapshot: &Value, query: &str, max_chars: usize) -> S
     reference
 }
 
+fn contains_search_term(text: &str, term: &str) -> bool {
+    if term.chars().count() > 2 {
+        return text.contains(term);
+    }
+    text.match_indices(term).any(|(start, matched)| {
+        let before_is_boundary =
+            text[..start].chars().next_back().map_or(true, |ch| !ch.is_alphanumeric());
+        let end = start + matched.len();
+        let after_is_boundary = text[end..].chars().next().map_or(true, |ch| !ch.is_alphanumeric());
+        before_is_boundary && after_is_boundary
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_payload, select_reference_sheets};
+    use super::{build_assistant_profile, build_payload, select_reference_sheets};
     use serde_json::json;
 
     #[test]
@@ -153,6 +229,41 @@ mod tests {
             select_reference_sheets(&snapshot, "Почему карбонат реагирует с кислотой?", 2_000);
         assert!(selected.starts_with("\n\n### Карбонаты"));
         assert!(!selected.contains("### Растворимость"));
+    }
+
+    #[test]
+    fn short_spectroscopy_term_does_not_match_inside_unrelated_word() {
+        let snapshot = json!({
+            "reference_sheets": [
+                {"title": "Прикладная аналитика", "description": "Метрики аналитики", "content_markdown": "Общий обзор"},
+                {"title": "ИК-спектроскопия", "description": "Колебательные спектры", "content_markdown": "Характеристические полосы"}
+            ]
+        });
+
+        let selected =
+            select_reference_sheets(&snapshot, "Что показывает ИК-спектроскопия?", 2_000);
+
+        assert!(selected.starts_with("\n\n### ИК-спектроскопия"));
+        assert!(!selected.contains("### Прикладная аналитика"));
+    }
+
+    #[test]
+    fn profile_uses_all_published_teacher_settings() {
+        let profile = build_assistant_profile(&json!({
+            "name": "Практикум",
+            "discipline": "Неорганическая химия",
+            "description": "Первый курс",
+            "audience": "студенты 1 курса",
+            "language": "ru",
+            "topics": ["Растворы", "Лабораторная работа"],
+            "criteria": [{"name": "Расчёт", "max_score": 4, "description": "Проверить единицы"}],
+            "nuances": ["Не придумывать наблюдения"]
+        }));
+
+        assert!(profile.contains("Аудитория: студенты 1 курса"));
+        assert!(profile.contains("Темы курса: Растворы; Лабораторная работа"));
+        assert!(profile.contains("- Расчёт — максимум 4 балла — Проверить единицы"));
+        assert!(profile.contains("Требования преподавателя: Не придумывать наблюдения"));
     }
 
     #[test]
