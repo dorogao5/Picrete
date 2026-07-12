@@ -33,17 +33,14 @@ impl AssistantChatService {
             .and_then(Value::as_str)
             .context("Published assistant has no tutor prompt")?;
         let assistant = snapshot.get("assistant").cloned().unwrap_or_else(|| json!({}));
-        let mut reference = String::new();
-        if let Some(sheets) = snapshot.get("reference_sheets").and_then(Value::as_array) {
-            for sheet in sheets {
-                let title = sheet.get("title").and_then(Value::as_str).unwrap_or("Справочник");
-                let content = sheet.get("content_markdown").and_then(Value::as_str).unwrap_or("");
-                if reference.len() + title.len() + content.len() > 40_000 {
-                    break;
-                }
-                reference.push_str(&format!("\n\n### {title}\n{content}"));
-            }
-        }
+        let query = history
+            .iter()
+            .rev()
+            .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let reference = select_reference_sheets(snapshot, query, 40_000);
         let system = format!(
             "{prompt}\n\nПрофиль курса:\n{}\n\nКанонические материалы курса:{}\n\n\
              Отвечайте по-русски, если студент не попросил иначе. Не выдумывайте факты вне материалов. \
@@ -77,5 +74,70 @@ impl AssistantChatService {
             .filter(|value| !value.trim().is_empty())
             .map(str::to_owned)
             .context("Assistant model returned an empty answer")
+    }
+}
+
+fn select_reference_sheets(snapshot: &Value, query: &str, max_chars: usize) -> String {
+    let Some(sheets) = snapshot.get("reference_sheets").and_then(Value::as_array) else {
+        return String::new();
+    };
+    let query_lower = query.to_lowercase();
+    let mut terms = query_lower
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 3)
+        .take(30)
+        .collect::<Vec<_>>();
+    terms.sort_unstable();
+    terms.dedup();
+
+    let mut ranked = sheets
+        .iter()
+        .enumerate()
+        .map(|(index, sheet)| {
+            let title = sheet.get("title").and_then(Value::as_str).unwrap_or("");
+            let description = sheet.get("description").and_then(Value::as_str).unwrap_or("");
+            let content = sheet.get("content_markdown").and_then(Value::as_str).unwrap_or("");
+            let title_lower = title.to_lowercase();
+            let description_lower = description.to_lowercase();
+            let content_lower = content.to_lowercase();
+            let score = terms.iter().fold(0_u32, |score, term| {
+                score
+                    + if title_lower.contains(term) { 8 } else { 0 }
+                    + if description_lower.contains(term) { 3 } else { 0 }
+                    + if content_lower.contains(term) { 1 } else { 0 }
+            });
+            (score, index, title, content)
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by_key(|(score, index, _, _)| (std::cmp::Reverse(*score), *index));
+
+    let mut reference = String::new();
+    for (_, _, title, content) in ranked {
+        let section =
+            format!("\n\n### {}\n{}", if title.is_empty() { "Справочник" } else { title }, content);
+        if reference.len() + section.len() > max_chars {
+            continue;
+        }
+        reference.push_str(&section);
+    }
+    reference
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_reference_sheets;
+    use serde_json::json;
+
+    #[test]
+    fn relevant_sheets_are_selected_before_unrelated_ones() {
+        let snapshot = json!({
+            "reference_sheets": [
+                {"title": "Растворимость", "description": "", "content_markdown": "Общие правила"},
+                {"title": "Карбонаты", "description": "Реакции с кислотами", "content_markdown": "Выделяется CO2"}
+            ]
+        });
+        let selected =
+            select_reference_sheets(&snapshot, "Почему карбонат реагирует с кислотой?", 55);
+        assert!(selected.starts_with("\n\n### Карбонаты"));
     }
 }
