@@ -1,9 +1,71 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 
 use crate::core::config::Settings;
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub(crate) struct PublishedRuntimePolicy {
+    #[serde(default)]
+    pub(crate) policy_version: String,
+    #[serde(default)]
+    pub(crate) tutor_model_id: String,
+    #[serde(default)]
+    pub(crate) decision_model_id: String,
+    #[serde(default)]
+    pub(crate) tier: String,
+    #[serde(default)]
+    pub(crate) allowed_uses: Vec<String>,
+}
+
+impl PublishedRuntimePolicy {
+    pub(crate) fn is_legacy(&self) -> bool {
+        self.policy_version.trim().is_empty()
+            && self.tutor_model_id.trim().is_empty()
+            && self.decision_model_id.trim().is_empty()
+            && self.tier.trim().is_empty()
+            && self.allowed_uses.is_empty()
+    }
+
+    pub(crate) fn validate_configured_model(
+        &self,
+        configured_model: &str,
+    ) -> std::result::Result<(), String> {
+        if self.is_legacy() {
+            return Ok(());
+        }
+        if self.policy_version.trim().is_empty() {
+            return Err("runtime_policy has no policy_version".to_string());
+        }
+        if !self.tier.eq_ignore_ascii_case("decision") {
+            return Err(format!(
+                "published tutor policy tier is '{}' instead of decision",
+                self.tier
+            ));
+        }
+        if self.decision_model_id.trim().is_empty() {
+            return Err("runtime_policy has no decision_model_id".to_string());
+        }
+        if !self.allowed_uses.iter().any(|use_name| use_name == "student_tutor") {
+            return Err("runtime_policy does not allow student_tutor".to_string());
+        }
+        let expected = self.tutor_model_id.trim();
+        if expected.is_empty() {
+            return Err("runtime_policy has no tutor_model_id".to_string());
+        }
+        if !configured_model.trim().eq_ignore_ascii_case(expected) {
+            return Err(format!(
+                "configured ASSISTANT_AI_MODEL '{}' does not match published tutor model '{}' (policy {})",
+                configured_model.trim(),
+                expected,
+                self.policy_version
+            ));
+        }
+        Ok(())
+    }
+}
 
 pub(crate) struct AssistantChatService {
     client: Client,
@@ -28,6 +90,17 @@ impl AssistantChatService {
     }
 
     pub(crate) async fn reply(&self, snapshot: &Value, history: &[Value]) -> Result<String> {
+        let runtime_policy: PublishedRuntimePolicy = serde_json::from_value(
+            snapshot.pointer("/assistant/runtime_policy").cloned().unwrap_or_else(|| json!({})),
+        )
+        .context("Published assistant has an invalid runtime_policy")?;
+        runtime_policy.validate_configured_model(&self.model).map_err(anyhow::Error::msg)?;
+        if runtime_policy.is_legacy() {
+            tracing::warn!(
+                configured_model = %self.model,
+                "Published assistant has no runtime policy; allowing legacy snapshot"
+            );
+        }
         let prompt = snapshot
             .pointer("/prompts/tutor/system_prompt")
             .and_then(Value::as_str)
@@ -214,7 +287,9 @@ fn contains_search_term(text: &str, term: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_assistant_profile, build_payload, select_reference_sheets};
+    use super::{
+        build_assistant_profile, build_payload, select_reference_sheets, PublishedRuntimePolicy,
+    };
     use serde_json::json;
 
     #[test]
@@ -286,5 +361,44 @@ mod tests {
         assert_eq!(payload["max_completion_tokens"], 1800);
         assert!(payload.get("max_tokens").is_none());
         assert!(payload.get("thinking").is_none());
+    }
+
+    #[test]
+    fn runtime_policy_accepts_matching_decision_model() {
+        let policy = PublishedRuntimePolicy {
+            policy_version: "model-use-v1:test".to_string(),
+            tutor_model_id: "deepseek-v4-pro".to_string(),
+            decision_model_id: "deepseek-v4-pro".to_string(),
+            tier: "decision".to_string(),
+            allowed_uses: vec!["student_tutor".to_string(), "grading".to_string()],
+        };
+
+        assert!(policy.validate_configured_model("DeepSeek-V4-Pro").is_ok());
+    }
+
+    #[test]
+    fn runtime_policy_rejects_silent_model_mismatch() {
+        let policy = PublishedRuntimePolicy {
+            policy_version: "model-use-v1:test".to_string(),
+            tutor_model_id: "deepseek-v4-pro".to_string(),
+            decision_model_id: "deepseek-v4-pro".to_string(),
+            tier: "decision".to_string(),
+            allowed_uses: vec!["student_tutor".to_string()],
+        };
+
+        let error = policy
+            .validate_configured_model("deepseek-v4-flash")
+            .expect_err("mismatched runtime model must be rejected");
+
+        assert!(error.contains("ASSISTANT_AI_MODEL"));
+        assert!(error.contains("deepseek-v4-pro"));
+    }
+
+    #[test]
+    fn empty_runtime_policy_keeps_legacy_snapshots_compatible() {
+        let policy = PublishedRuntimePolicy::default();
+
+        assert!(policy.is_legacy());
+        assert!(policy.validate_configured_model("legacy-model").is_ok());
     }
 }

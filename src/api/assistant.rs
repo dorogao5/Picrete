@@ -14,7 +14,7 @@ use crate::api::guards::{require_course_membership, CurrentUser};
 use crate::core::state::AppState;
 use crate::core::time::{format_primitive, primitive_now_utc};
 use crate::repositories;
-use crate::services::assistant_chat::AssistantChatService;
+use crate::services::assistant_chat::{AssistantChatService, PublishedRuntimePolicy};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -57,6 +57,8 @@ struct PublishedAssistant {
     criteria: Vec<Value>,
     #[serde(default)]
     nuances: Vec<String>,
+    #[serde(default)]
+    runtime_policy: PublishedRuntimePolicy,
 }
 
 #[derive(Debug, Serialize)]
@@ -118,6 +120,18 @@ async fn publish_snapshot(
         || payload.prompts.pointer("/tutor/system_prompt").and_then(Value::as_str).is_none()
     {
         return Err(ApiError::UnprocessableEntity("Некорректный снимок ассистента".to_string()));
+    }
+    if let Err(error) = payload
+        .assistant
+        .runtime_policy
+        .validate_configured_model(&state.settings().ai().assistant_model)
+    {
+        return Err(ApiError::UnprocessableEntity(format!(
+            "Политика модели ассистента несовместима с Picrete: {error}"
+        )));
+    }
+    if payload.assistant.runtime_policy.is_legacy() {
+        tracing::warn!(course_id = %course_id, "Publishing legacy assistant snapshot without runtime policy");
     }
     repositories::courses::find_by_id(state.db(), &course_id)
         .await
@@ -370,11 +384,12 @@ mod tests {
         assert!(snapshot.assistant.topics.is_empty());
         assert!(snapshot.assistant.criteria.is_empty());
         assert!(snapshot.assistant.nuances.is_empty());
+        assert!(snapshot.assistant.runtime_policy.is_legacy());
     }
 
     #[test]
     fn published_profile_fields_survive_snapshot_round_trip() {
-        let snapshot: PublishSnapshot = serde_json::from_value(base_snapshot(json!({
+        let mut raw = base_snapshot(json!({
             "id": "assistant-1",
             "name": "Практикум",
             "discipline": "Неорганическая химия",
@@ -384,13 +399,23 @@ mod tests {
             "topics": ["Растворы"],
             "criteria": [{"name": "Расчёт", "max_score": 4}],
             "nuances": ["Не придумывать наблюдения"]
-        })))
-        .expect("extended snapshot must be valid");
+        }));
+        raw["assistant"]["runtime_policy"] = json!({
+            "policy_version": "model-use-v1:test",
+            "tutor_model_id": "deepseek-v4-pro",
+            "decision_model_id": "deepseek-v4-pro",
+            "tier": "decision",
+            "allowed_uses": ["student_tutor", "task_validation", "grading"]
+        });
+        let snapshot: PublishSnapshot =
+            serde_json::from_value(raw).expect("extended snapshot must be valid");
         let encoded = serde_json::to_value(snapshot).expect("snapshot must serialize");
 
         assert_eq!(encoded["assistant"]["audience"], "студенты 1 курса");
         assert_eq!(encoded["assistant"]["topics"], json!(["Растворы"]));
         assert_eq!(encoded["assistant"]["criteria"][0]["max_score"], 4);
         assert_eq!(encoded["assistant"]["nuances"][0], "Не придумывать наблюдения");
+        assert_eq!(encoded["assistant"]["runtime_policy"]["tutor_model_id"], "deepseek-v4-pro");
+        assert_eq!(encoded["assistant"]["runtime_policy"]["tier"], "decision");
     }
 }
