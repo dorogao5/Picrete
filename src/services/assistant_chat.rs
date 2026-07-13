@@ -115,11 +115,7 @@ impl AssistantChatService {
             .unwrap_or("");
         let reference = select_reference_sheets(snapshot, query, 40_000);
         let profile = build_assistant_profile(&assistant);
-        let system = format!(
-            "{prompt}\n\n{profile}\n\nКанонические материалы курса:{reference}\n\n\
-             Отвечайте по-русски, если студент не попросил иначе. Не выдумывайте факты вне материалов. \
-             Помогайте понять ход решения: задавайте уточняющие вопросы и не подменяйте самостоятельную работу готовым ответом без объяснения."
-        );
+        let system = build_system_prompt(prompt, &profile, &reference);
         let mut messages = vec![json!({"role": "system", "content": system})];
         messages
             .extend(history.iter().rev().take(12).cloned().collect::<Vec<_>>().into_iter().rev());
@@ -143,6 +139,20 @@ impl AssistantChatService {
             .map(str::to_owned)
             .context("Assistant model returned an empty answer")
     }
+}
+
+fn build_system_prompt(prompt: &str, profile: &str, reference: &str) -> String {
+    format!(
+        "{prompt}\n\n{profile}\n\nКОНТЕКСТ СЕССИИ\n\
+         Это свободный диалог по курсу: платформа не передала назначенную или оцениваемую задачу. \
+         Не утверждайте, что студент уже показал верный фрагмент решения, если в его сообщении нет попытки. \
+         На самостоятельный расчётный вопрос дайте полный объяснённый разбор и итоговый ответ. \
+         Режим проверки с поэтапной подсказкой используйте, только когда студент явно просит проверить свою попытку. \
+         Предметные ограничения исходного промпта, включая безопасность реальной лабораторной работы, сохраняют приоритет.\n\n\
+         Канонические материалы курса:{reference}\n\n\
+         Отвечайте по-русски, если студент не попросил иначе. Не выдумывайте факты вне материалов. \
+         Помогайте понять ход решения и не подменяйте объяснение одним готовым ответом."
+    )
 }
 
 fn build_assistant_profile(assistant: &Value) -> String {
@@ -288,7 +298,8 @@ fn contains_search_term(text: &str, term: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_assistant_profile, build_payload, select_reference_sheets, PublishedRuntimePolicy,
+        build_assistant_profile, build_payload, build_system_prompt, select_reference_sheets,
+        PublishedRuntimePolicy,
     };
     use serde_json::json;
 
@@ -339,6 +350,16 @@ mod tests {
         assert!(profile.contains("Темы курса: Растворы; Лабораторная работа"));
         assert!(profile.contains("- Расчёт — максимум 4 балла — Проверить единицы"));
         assert!(profile.contains("Требования преподавателя: Не придумывать наблюдения"));
+    }
+
+    #[test]
+    fn free_course_chat_does_not_masquerade_as_assigned_work() {
+        let system = build_system_prompt("Предметный промпт", "Профиль", "\n\n### Карточка\nТекст");
+
+        assert!(system.contains("Это свободный диалог по курсу"));
+        assert!(system.contains("платформа не передала назначенную или оцениваемую задачу"));
+        assert!(system.contains("полный объяснённый разбор и итоговый ответ"));
+        assert!(system.contains("безопасность реальной лабораторной работы"));
     }
 
     #[test]
