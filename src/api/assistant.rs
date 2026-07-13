@@ -290,6 +290,10 @@ async fn chat(
     )
     .await
     .map_err(|e| ApiError::internal(e, "Failed to load assistant chat"))?;
+    ensure_thread_snapshot_is_current(
+        existing.as_ref().map(|thread| thread.snapshot_version.as_str()),
+        &assistant.snapshot_version,
+    )?;
     let mut messages = existing
         .as_ref()
         .and_then(|thread| thread.messages.as_array().cloned())
@@ -329,6 +333,19 @@ async fn chat(
     Ok(Json(thread_response(saved)))
 }
 
+fn ensure_thread_snapshot_is_current(
+    thread_snapshot_version: Option<&str>,
+    current_snapshot_version: &str,
+) -> Result<(), ApiError> {
+    if thread_snapshot_version.is_some_and(|version| version != current_snapshot_version) {
+        return Err(ApiError::Conflict(
+            "Ассистент курса обновился. Начните новый диалог, чтобы использовать актуальную версию."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn thread_response(
     thread: repositories::course_ai_assistants::AssistantChatThread,
 ) -> ThreadResponse {
@@ -356,7 +373,8 @@ fn thread_summary_response(
 
 #[cfg(test)]
 mod tests {
-    use super::PublishSnapshot;
+    use super::{ensure_thread_snapshot_is_current, PublishSnapshot};
+    use crate::api::errors::ApiError;
     use serde_json::json;
 
     fn base_snapshot(assistant: serde_json::Value) -> serde_json::Value {
@@ -417,5 +435,26 @@ mod tests {
         assert_eq!(encoded["assistant"]["nuances"][0], "Не придумывать наблюдения");
         assert_eq!(encoded["assistant"]["runtime_policy"]["tutor_model_id"], "deepseek-v4-pro");
         assert_eq!(encoded["assistant"]["runtime_policy"]["tier"], "decision");
+    }
+
+    #[test]
+    fn stale_thread_snapshot_is_rejected_before_continuation() {
+        let error = ensure_thread_snapshot_is_current(Some("snapshot-v1"), "snapshot-v2")
+            .expect_err("stale thread must not continue with a newer assistant snapshot");
+
+        match error {
+            ApiError::Conflict(message) => {
+                assert!(message.contains("Начните новый диалог"));
+            }
+            other => panic!("expected conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn current_or_new_thread_snapshot_is_allowed() {
+        ensure_thread_snapshot_is_current(Some("snapshot-v2"), "snapshot-v2")
+            .expect("current thread must remain writable");
+        ensure_thread_snapshot_is_current(None, "snapshot-v2")
+            .expect("new thread must remain writable");
     }
 }
