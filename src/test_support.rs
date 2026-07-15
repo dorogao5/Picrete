@@ -50,6 +50,8 @@ pub(crate) fn set_test_env() {
     std::env::set_var("REDIS_DB", TEST_REDIS_DB);
     std::env::remove_var("REDIS_PASSWORD");
     std::env::set_var("PROMETHEUS_ENABLED", "0");
+    std::env::remove_var("ASSISTANT_AI_REQUEST_TIMEOUT");
+    std::env::remove_var("ASSISTANT_CHAT_MAX_CONCURRENT");
     std::env::remove_var("S3_ENDPOINT");
     std::env::remove_var("S3_ACCESS_KEY");
     std::env::remove_var("S3_SECRET_KEY");

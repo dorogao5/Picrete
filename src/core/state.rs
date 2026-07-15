@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use sqlx::PgPool;
+use tokio::sync::Semaphore;
 
 use crate::core::{config::Settings, redis::RedisHandle};
 use crate::services::storage::StorageService;
@@ -15,6 +16,7 @@ struct InnerState {
     db: PgPool,
     redis: RedisHandle,
     storage: Option<StorageService>,
+    assistant_chat_capacity: Semaphore,
 }
 
 impl AppState {
@@ -24,7 +26,11 @@ impl AppState {
         redis: RedisHandle,
         storage: Option<StorageService>,
     ) -> Self {
-        Self { inner: Arc::new(InnerState { settings, db, redis, storage }) }
+        let assistant_chat_capacity =
+            Semaphore::new(settings.ai().assistant_max_concurrent_requests as usize);
+        Self {
+            inner: Arc::new(InnerState { settings, db, redis, storage, assistant_chat_capacity }),
+        }
     }
 
     pub(crate) fn settings(&self) -> &Settings {
@@ -41,5 +47,9 @@ impl AppState {
 
     pub(crate) fn storage(&self) -> Option<&StorageService> {
         self.inner.storage.as_ref()
+    }
+
+    pub(crate) fn assistant_chat_capacity(&self) -> &Semaphore {
+        &self.inner.assistant_chat_capacity
     }
 }

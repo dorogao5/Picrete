@@ -63,6 +63,14 @@ impl Settings {
             env_optional("ASSISTANT_AI_BASE_URL").unwrap_or_else(|| openai_base_url.clone());
         let assistant_model =
             env_optional("ASSISTANT_AI_MODEL").unwrap_or_else(|| ai_model.clone());
+        let assistant_request_timeout = parse_u64(
+            "ASSISTANT_AI_REQUEST_TIMEOUT",
+            env_or_default("ASSISTANT_AI_REQUEST_TIMEOUT", "110"),
+        )?;
+        let assistant_max_concurrent_requests = parse_u32(
+            "ASSISTANT_CHAT_MAX_CONCURRENT",
+            env_or_default("ASSISTANT_CHAT_MAX_CONCURRENT", "12"),
+        )?;
         let ai_max_tokens = parse_u32("AI_MAX_TOKENS", env_or_default("AI_MAX_TOKENS", "10000"))?;
         let ai_request_timeout =
             parse_u64("AI_REQUEST_TIMEOUT", env_or_default("AI_REQUEST_TIMEOUT", "600"))?;
@@ -181,6 +189,8 @@ impl Settings {
                 assistant_api_key,
                 assistant_base_url,
                 assistant_model,
+                assistant_request_timeout,
+                assistant_max_concurrent_requests,
                 ai_max_tokens,
                 ai_request_timeout,
             },
@@ -356,6 +366,23 @@ impl Settings {
             });
         }
 
+        if !(10..=120).contains(&self.ai.assistant_request_timeout) {
+            return Err(ConfigError::InvalidValue {
+                field: "ASSISTANT_AI_REQUEST_TIMEOUT",
+                value: self.ai.assistant_request_timeout.to_string(),
+            });
+        }
+
+        // The pool has 30 connections. Assistant chat holds one connection while the
+        // model is running so a transaction-scoped advisory lock can protect history.
+        // Keep capacity below the pool ceiling and leave headroom for ordinary API work.
+        if !(1..=24).contains(&self.ai.assistant_max_concurrent_requests) {
+            return Err(ConfigError::InvalidValue {
+                field: "ASSISTANT_CHAT_MAX_CONCURRENT",
+                value: self.ai.assistant_max_concurrent_requests.to_string(),
+            });
+        }
+
         if self.runtime.strict_config || self.runtime.environment.is_production() {
             let task_bank_root = std::path::Path::new(&self.task_bank.root);
             if !task_bank_root.exists() || !task_bank_root.is_dir() {
@@ -412,5 +439,35 @@ impl Settings {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+    use crate::core::config::types::ConfigError;
+    use crate::test_support;
+
+    #[tokio::test]
+    async fn assistant_runtime_limits_are_validated() {
+        let _guard = test_support::env_lock().await;
+        test_support::set_test_env();
+
+        std::env::set_var("ASSISTANT_AI_REQUEST_TIMEOUT", "9");
+        let timeout_error = Settings::load().expect_err("short timeout must be rejected");
+        assert!(matches!(
+            timeout_error,
+            ConfigError::InvalidValue { field: "ASSISTANT_AI_REQUEST_TIMEOUT", .. }
+        ));
+
+        std::env::remove_var("ASSISTANT_AI_REQUEST_TIMEOUT");
+        std::env::set_var("ASSISTANT_CHAT_MAX_CONCURRENT", "25");
+        let capacity_error = Settings::load().expect_err("unsafe capacity must be rejected");
+        assert!(matches!(
+            capacity_error,
+            ConfigError::InvalidValue { field: "ASSISTANT_CHAT_MAX_CONCURRENT", .. }
+        ));
+
+        std::env::remove_var("ASSISTANT_CHAT_MAX_CONCURRENT");
     }
 }

@@ -76,6 +76,8 @@ pub(crate) struct AiSettings {
     pub(crate) assistant_api_key: String,
     pub(crate) assistant_base_url: String,
     pub(crate) assistant_model: String,
+    pub(crate) assistant_request_timeout: u64,
+    pub(crate) assistant_max_concurrent_requests: u32,
     pub(crate) ai_max_tokens: u32,
     pub(crate) ai_request_timeout: u64,
 }

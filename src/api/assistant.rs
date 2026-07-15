@@ -7,6 +7,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::time::Duration;
+use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::api::errors::ApiError;
@@ -15,6 +18,9 @@ use crate::core::state::AppState;
 use crate::core::time::{format_primitive, primitive_now_utc};
 use crate::repositories;
 use crate::services::assistant_chat::{AssistantChatService, PublishedRuntimePolicy};
+
+const CHAT_CAPACITY_WAIT: Duration = Duration::from_secs(2);
+const CHAT_THREAD_LOCK_WAIT_SECONDS: u64 = 5;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -256,12 +262,18 @@ async fn chat(
     Json(payload): Json<ChatRequest>,
 ) -> Result<Json<ThreadResponse>, ApiError> {
     require_course_membership(&state, &user, &course_id).await?;
-    let message = payload.message.trim();
+    let message = payload.message.trim().to_string();
     if message.is_empty() || message.chars().count() > 4_000 {
         return Err(ApiError::BadRequest(
             "Сообщение должно содержать от 1 до 4000 символов".to_string(),
         ));
     }
+    let thread_id = match payload.thread_id {
+        Some(value) => Uuid::parse_str(value.trim())
+            .map(|value| value.to_string())
+            .map_err(|_| ApiError::BadRequest("Некорректный идентификатор диалога".to_string()))?,
+        None => Uuid::new_v4().to_string(),
+    };
     let rate_key = format!("assistant-chat:{}:{}", course_id, user.id);
     match state.redis().rate_limit(&rate_key, 12, 60).await {
         Ok(true) => {}
@@ -273,17 +285,48 @@ async fn chat(
             return Err(ApiError::ServiceUnavailable("Диалог временно недоступен".to_string()));
         }
     }
-    let assistant = repositories::course_ai_assistants::find(state.db(), &course_id)
-        .await
-        .map_err(|e| ApiError::internal(e, "Failed to load course assistant"))?
-        .filter(|item| item.enabled)
-        .ok_or_else(|| {
-            ApiError::NotFound("Для курса ещё не опубликован ИИ-ассистент".to_string())
-        })?;
 
-    let thread_id = payload.thread_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let existing = repositories::course_ai_assistants::find_thread(
-        state.db(),
+    let _capacity =
+        acquire_chat_capacity(state.assistant_chat_capacity(), CHAT_CAPACITY_WAIT).await?;
+    let service = AssistantChatService::from_settings(state.settings())
+        .map_err(|e| ApiError::internal(e, "Failed to initialize course assistant"))?;
+    let mut transaction = state
+        .db()
+        .begin()
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to start assistant chat transaction"))?;
+    if let Err(error) = repositories::course_ai_assistants::acquire_thread_lock(
+        &mut transaction,
+        &course_id,
+        &user.id,
+        &thread_id,
+        CHAT_THREAD_LOCK_WAIT_SECONDS,
+    )
+    .await
+    {
+        if is_database_lock_timeout(&error) {
+            metrics::counter!("assistant_chat_thread_busy_total").increment(1);
+            return Err(ApiError::Conflict(
+                "В этом диалоге уже формируется ответ. Дождитесь его перед следующим сообщением."
+                    .to_string(),
+            ));
+        }
+        return Err(ApiError::internal(error, "Failed to lock assistant chat"));
+    }
+
+    // Load both the published snapshot and the thread after acquiring the lock.
+    // A concurrent request then observes the first request's committed history
+    // instead of overwriting it with a response generated from stale messages.
+    let assistant =
+        repositories::course_ai_assistants::find_with_executor(&mut *transaction, &course_id)
+            .await
+            .map_err(|e| ApiError::internal(e, "Failed to load course assistant"))?
+            .filter(|item| item.enabled)
+            .ok_or_else(|| {
+                ApiError::NotFound("Для курса ещё не опубликован ИИ-ассистент".to_string())
+            })?;
+    let existing = repositories::course_ai_assistants::find_thread_with_executor(
+        &mut *transaction,
         &thread_id,
         &course_id,
         &user.id,
@@ -298,11 +341,10 @@ async fn chat(
         .as_ref()
         .and_then(|thread| thread.messages.as_array().cloned())
         .unwrap_or_default();
-    messages.push(json!({"role": "user", "content": message}));
-    let service = AssistantChatService::from_settings(state.settings())
-        .map_err(|e| ApiError::internal(e, "Failed to initialize course assistant"))?;
+    messages.push(json!({"role": "user", "content": &message}));
     let reply = service.reply(&assistant.snapshot, &messages).await.map_err(|error| {
         tracing::error!(%error, course_id = %course_id, "Course assistant reply failed");
+        metrics::counter!("assistant_chat_requests_total", "status" => "model_failed").increment(1);
         ApiError::ServiceUnavailable(
             "Ассистент не смог ответить. Сообщение не сохранено — повторите попытку.".to_string(),
         )
@@ -318,8 +360,8 @@ async fn chat(
         }
         value
     });
-    let saved = repositories::course_ai_assistants::save_thread(
-        state.db(),
+    let saved = repositories::course_ai_assistants::save_thread_with_executor(
+        &mut *transaction,
         &thread_id,
         &course_id,
         &user.id,
@@ -330,7 +372,37 @@ async fn chat(
     )
     .await
     .map_err(|e| ApiError::internal(e, "Failed to save assistant chat"))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to commit assistant chat"))?;
+    metrics::counter!("assistant_chat_requests_total", "status" => "success").increment(1);
     Ok(Json(thread_response(saved)))
+}
+
+async fn acquire_chat_capacity(
+    semaphore: &Semaphore,
+    wait_timeout: Duration,
+) -> Result<SemaphorePermit<'_>, ApiError> {
+    match timeout(wait_timeout, semaphore.acquire()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(_)) => Err(ApiError::ServiceUnavailable(
+            "Диалог временно недоступен. Повторите попытку позже.".to_string(),
+        )),
+        Err(_) => {
+            metrics::counter!("assistant_chat_capacity_rejected_total").increment(1);
+            Err(ApiError::ServiceUnavailable(
+                "Ассистент сейчас занят. Повторите попытку через несколько секунд.".to_string(),
+            ))
+        }
+    }
+}
+
+fn is_database_lock_timeout(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(|database_error| database_error.code())
+        .is_some_and(|code| code == "55P03")
 }
 
 fn ensure_thread_snapshot_is_current(
@@ -373,9 +445,12 @@ fn thread_summary_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_thread_snapshot_is_current, PublishSnapshot};
+    use std::time::Duration;
+
+    use super::{acquire_chat_capacity, ensure_thread_snapshot_is_current, PublishSnapshot};
     use crate::api::errors::ApiError;
     use serde_json::json;
+    use tokio::sync::Semaphore;
 
     fn base_snapshot(assistant: serde_json::Value) -> serde_json::Value {
         json!({
@@ -456,5 +531,20 @@ mod tests {
             .expect("current thread must remain writable");
         ensure_thread_snapshot_is_current(None, "snapshot-v2")
             .expect("new thread must remain writable");
+    }
+
+    #[tokio::test]
+    async fn global_chat_capacity_fails_fast_instead_of_queueing_without_bound() {
+        let semaphore = Semaphore::new(1);
+        let _held = semaphore.acquire().await.expect("first permit");
+
+        let result = acquire_chat_capacity(&semaphore, Duration::from_millis(10)).await;
+
+        match result {
+            Err(ApiError::ServiceUnavailable(message)) => {
+                assert!(message.contains("Ассистент сейчас занят"));
+            }
+            _ => panic!("expected bounded capacity rejection"),
+        }
     }
 }

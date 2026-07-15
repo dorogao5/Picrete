@@ -87,6 +87,15 @@ cargo build --release --bin picrete-rust --bin worker --bin telegram_bot
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
+Для student-facing ассистента используется отдельный дедлайн
+`ASSISTANT_AI_REQUEST_TIMEOUT` (по умолчанию 110 секунд). У reverse proxy для
+`/api/v1` должны быть `proxy_read_timeout` и `proxy_send_timeout` не меньше
+150 секунд: это оставляет запас на ограниченное ожидание слота и блокировки
+диалога, а приложение успевает вернуть контролируемую ошибку до proxy timeout.
+Число одновременных запросов ограничивает `ASSISTANT_CHAT_MAX_CONCURRENT`
+(по умолчанию 12); повышать его выше 24 конфигурация не позволит, чтобы не
+исчерпать PostgreSQL pool.
+
 Сервисы в compose:
 
 - `api`

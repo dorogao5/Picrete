@@ -76,7 +76,7 @@ pub(crate) struct AssistantChatService {
 
 impl AssistantChatService {
     pub(crate) fn from_settings(settings: &Settings) -> Result<Self> {
-        let timeout = Duration::from_secs(settings.ai().ai_request_timeout.min(120));
+        let timeout = Duration::from_secs(settings.ai().assistant_request_timeout);
         Ok(Self {
             client: Client::builder()
                 .connect_timeout(Duration::from_secs(10))
