@@ -80,6 +80,7 @@ pub(crate) fn validate_bank_item(
     number: &str,
     text: &str,
     answer: Option<&str>,
+    solution: Option<&str>,
     has_answer: bool,
     has_images: bool,
 ) -> Vec<ContentIssue> {
@@ -90,11 +91,15 @@ pub(crate) fn validate_bank_item(
     validate_required_illustration(text, has_images, &location, &mut issues);
 
     let normalized_answer = answer.map(str::trim).filter(|value| !value.is_empty());
-    if !has_answer || normalized_answer.is_none() {
+    let normalized_solution = solution.map(str::trim).filter(|value| !value.is_empty());
+    if (!has_answer || normalized_answer.is_none()) && normalized_solution.is_none() {
         issues.push(ContentIssue::new(
             &location,
-            "a non-empty reference answer is required before the item can be added to an assessment",
+            "a non-empty reference answer or solution is required before the item can be added to an assessment",
         ));
+    }
+    if let Some(solution) = normalized_solution {
+        validate_content_text(solution, &location, "solution", &mut issues);
     }
     if let Some(answer) = normalized_answer {
         validate_content_text(answer, &location, "answer", &mut issues);
@@ -256,7 +261,22 @@ fn references_illustration(value: &str) -> bool {
         }
     }
 
-    let referenced_nouns = ["рисун", "график", "диаграмм", "схем"];
+    // A diagram the student must construct and a reaction scheme already written
+    // inline are self-contained, unlike a referenced external illustration.
+    let constructs_diagram =
+        ["составить диаграмм", "составьте диаграмм", "построить диаграмм", "постройте диаграмм"]
+            .iter()
+            .any(|phrase| normalized.contains(phrase));
+    let inline_scheme = normalized.contains("схем")
+        && ["→", "->", "\\rightarrow", "\\text{1)", "\\text{2)"]
+            .iter()
+            .any(|marker| normalized.contains(marker));
+    let referenced_nouns = ["рисун", "график", "диаграмм", "схем"]
+        .into_iter()
+        .filter(|noun| {
+            !(*noun == "диаграмм" && constructs_diagram || *noun == "схем" && inline_scheme)
+        })
+        .collect::<Vec<_>>();
     let prepositions = ["по ", "на ", "согласно ", "из "];
     let explicitly_located = prepositions.iter().any(|preposition| {
         referenced_nouns.iter().any(|noun| normalized.contains(&format!("{preposition}{noun}")))
@@ -538,7 +558,7 @@ mod tests {
 
     #[test]
     fn bank_item_requires_a_real_answer() {
-        let issues = validate_bank_item("7.1", "Условие", Some("  "), true, false);
+        let issues = validate_bank_item("7.1", "Условие", Some("  "), None, true, false);
         assert!(issues.iter().any(|issue| issue.message.contains("non-empty reference answer")));
     }
 
@@ -546,14 +566,14 @@ mod tests {
     fn latex_commands_starting_with_n_are_not_escaped_newlines() {
         for content in [r"Найдите $\nu$", r"Докажите $a \neq b$", r"Вычислите $\nabla f$"]
         {
-            let issues = validate_bank_item("latex", content, Some("1"), true, false);
+            let issues = validate_bank_item("latex", content, Some("1"), None, true, false);
             assert!(issues.is_empty(), "{issues:?}");
         }
     }
 
     #[test]
     fn broken_formula_is_rejected() {
-        let issues = validate_bank_item("7.2", "Вычислите $x_{1$", Some("1 K"), true, false);
+        let issues = validate_bank_item("7.2", "Вычислите $x_{1$", Some("1 K"), None, true, false);
         assert!(issues.iter().any(|issue| issue.message.contains("unbalanced LaTeX braces")));
     }
 
@@ -576,6 +596,7 @@ mod tests {
             "7.3",
             "По графику определите температуру",
             Some("300 K"),
+            None,
             true,
             false,
         );
@@ -586,7 +607,7 @@ mod tests {
     fn instructions_to_create_a_graph_or_scheme_do_not_require_an_image() {
         for text in ["Постройте график зависимости", "Составьте схему реакции"]
         {
-            let issues = validate_bank_item("7.4", text, Some("готово"), true, false);
+            let issues = validate_bank_item("7.4", text, Some("готово"), None, true, false);
             assert!(
                 !issues.iter().any(|issue| issue.message.contains("no image attachment")),
                 "false image requirement for {text}: {issues:?}"
@@ -659,5 +680,20 @@ mod tests {
         let mut issues = Vec::new();
         validate_rubric(&json!({"criteria": []}), 5.0, "task", &mut issues);
         assert!(issues.iter().any(|issue| issue.message.contains("at least one")));
+    }
+}
+
+#[cfg(test)]
+mod bank_illustration_tests {
+    use super::references_illustration;
+    #[test]
+    fn inline_reactions_and_student_constructed_diagrams_need_no_image() {
+        assert!(!references_illustration("Составить диаграмму. Вычислить по диаграмме энтальпию."));
+        assert!(!references_illustration(r"Процесс протекает по схеме $AB \rightarrow A+B$"));
+        assert!(!references_illustration(
+            r"Какая из схем отражает процесс? $\text{1) HCl}=H^{+}+Cl^{-}$"
+        ));
+        assert!(references_illustration("По схеме на рисунке определите результат."));
+        assert!(references_illustration("Составить диаграмму по рисунку 1."));
     }
 }

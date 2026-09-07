@@ -3,6 +3,12 @@ use validator::Validate;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub(crate) struct TrainerFilters {
+    pub(crate) q: Option<String>,
+    pub(crate) task_type: Option<String>,
+    pub(crate) difficulty: Option<String>,
+    pub(crate) volume: Option<String>,
+    pub(crate) has_solution: Option<bool>,
+
     #[serde(default)]
     pub(crate) paragraph: Option<String>,
     #[serde(default)]

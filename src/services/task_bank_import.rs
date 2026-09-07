@@ -9,7 +9,7 @@ use crate::services::materials;
 const SVIRIDOV_SOURCE_ID: &str = "tb_source_sviridov";
 const SVIRIDOV_SOURCE_CODE: &str = "sviridov";
 const SVIRIDOV_SOURCE_TITLE: &str = "Задачник Свиридова";
-const SVIRIDOV_SOURCE_VERSION: &str = "v1";
+const SVIRIDOV_SOURCE_VERSION: &str = "v2";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImportSummary {
@@ -30,6 +30,19 @@ struct RawParagraph {
 
 #[derive(Debug, Deserialize)]
 struct RawTask {
+    #[serde(default)]
+    legacy_answer: Option<String>,
+    #[serde(default)]
+    solution: Option<String>,
+    #[serde(default)]
+    task_type: Option<String>,
+    #[serde(default)]
+    difficulty: Option<String>,
+    #[serde(default)]
+    volume: Option<String>,
+    #[serde(default)]
+    topic: Option<String>,
+
     number: String,
     text: String,
     #[serde(default)]
@@ -70,6 +83,7 @@ pub(crate) async fn import_sviridov(
         .await
         .context("failed to scope task bank source to matching courses")?;
 
+    let mut seen_ids = std::collections::HashSet::new();
     let mut imported_items = 0usize;
     let mut imported_images = 0usize;
 
@@ -97,20 +111,28 @@ pub(crate) async fn import_sviridov(
             let normalized_answer = normalize_optional_text(&task.answer);
             let has_answer = normalized_answer.is_some();
             let item_id = stable_item_id(number);
+            if !seen_ids.insert(item_id.clone()) {
+                return Err(anyhow!("duplicate task number or ID collision: {number}"));
+            }
 
             let item = repositories::task_bank::upsert_item(
                 &mut *tx,
                 repositories::task_bank::UpsertItem {
                     id: &item_id,
-                    source_id: SVIRIDOV_SOURCE_ID,
+                    source_id: &source.id,
                     number,
                     paragraph: paragraph_value,
-                    topic: topic_value,
+                    topic: task.topic.as_deref().unwrap_or(topic_value),
+                    solution: task.solution.as_deref().and_then(nonempty),
+                    task_type: task.task_type.as_deref().and_then(nonempty),
+                    difficulty: task.difficulty.as_deref().and_then(nonempty),
+                    volume: task.volume.as_deref().and_then(nonempty),
                     text,
                     answer: normalized_answer.as_deref(),
                     has_answer,
                     metadata: serde_json::json!({
                         "theory_text": theory_text.clone(),
+                        "legacy_answer": task.legacy_answer,
                     }),
                     now,
                 },
@@ -195,4 +217,9 @@ fn stable_image_id(number: &str, order_index: usize) -> String {
 
 fn sanitize_id_fragment(raw: &str) -> String {
     raw.chars().map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' }).collect()
+}
+
+fn nonempty(raw: &str) -> Option<&str> {
+    let raw = raw.trim();
+    (!raw.is_empty()).then_some(raw)
 }

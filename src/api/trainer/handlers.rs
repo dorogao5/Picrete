@@ -46,6 +46,7 @@ pub(super) async fn generate_set(
         &payload.filters.paragraph,
         &payload.filters.topic,
         payload.filters.has_answer,
+        payload.filters.clone(),
     );
     let total_candidates =
         repositories::task_bank::count_items_by_filters(state.db(), &filter_params)
@@ -90,6 +91,11 @@ pub(super) async fn generate_set(
     let now = primitive_now_utc();
     let trainer_set_id = Uuid::new_v4().to_string();
     let filters_json = serde_json::json!({
+        "q": payload.filters.q,
+        "task_type": payload.filters.task_type,
+        "difficulty": payload.filters.difficulty,
+        "volume": payload.filters.volume,
+        "has_solution": payload.filters.has_solution,
         "mode": "generated",
         "paragraph": normalize_optional(&payload.filters.paragraph),
         "topic": normalize_optional(&payload.filters.topic),
@@ -405,8 +411,10 @@ fn build_filter_params(
     paragraph: &Option<String>,
     topic: &Option<String>,
     has_answer: Option<bool>,
+    filters: crate::schemas::trainer::TrainerFilters,
 ) -> repositories::task_bank::FilterParams {
     repositories::task_bank::FilterParams {
+        filters,
         source_id: source_id.to_string(),
         paragraph: normalize_optional(paragraph),
         topic: normalize_optional(topic),

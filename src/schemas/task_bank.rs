@@ -18,6 +18,12 @@ pub(crate) struct TaskBankItemImageResponse {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct TaskBankItemResponse {
+    pub(crate) solution: Option<String>,
+    pub(crate) task_type: Option<String>,
+    pub(crate) difficulty: Option<String>,
+    pub(crate) volume: Option<String>,
+    pub(crate) has_solution: bool,
+
     pub(crate) id: String,
     pub(crate) source: String,
     pub(crate) number: String,

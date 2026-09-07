@@ -9,13 +9,18 @@ pub(crate) const SOURCE_COLUMNS: &str =
 const ALIASED_SOURCE_COLUMNS: &str =
     "s.id, s.code, s.title, s.version, s.is_active, s.created_at, s.updated_at";
 pub(crate) const ITEM_COLUMNS: &str = "\
-    id, source_id, number, paragraph, topic, text, answer, has_answer, metadata, created_at, \
+    id, source_id, number, paragraph, topic, text, answer, has_answer, solution, task_type, difficulty, volume, metadata, created_at, \
     updated_at";
 pub(crate) const IMAGE_COLUMNS: &str =
     "id, task_bank_item_id, relative_path, order_index, mime_type, created_at";
 
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct TaskBankItemListRow {
+    pub(crate) solution: Option<String>,
+    pub(crate) task_type: Option<String>,
+    pub(crate) difficulty: Option<String>,
+    pub(crate) volume: Option<String>,
+
     pub(crate) id: String,
     pub(crate) source_code: String,
     pub(crate) number: String,
@@ -29,6 +34,11 @@ pub(crate) struct TaskBankItemListRow {
 
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct TaskBankItemWithSourceRow {
+    pub(crate) solution: Option<String>,
+    pub(crate) task_type: Option<String>,
+    pub(crate) difficulty: Option<String>,
+    pub(crate) volume: Option<String>,
+
     pub(crate) id: String,
     pub(crate) source_code: String,
     pub(crate) source_title: String,
@@ -76,6 +86,11 @@ pub(crate) async fn upsert_source(
 }
 
 pub(crate) struct UpsertItem<'a> {
+    pub(crate) solution: Option<&'a str>,
+    pub(crate) task_type: Option<&'a str>,
+    pub(crate) difficulty: Option<&'a str>,
+    pub(crate) volume: Option<&'a str>,
+
     pub(crate) id: &'a str,
     pub(crate) source_id: &'a str,
     pub(crate) number: &'a str,
@@ -95,15 +110,19 @@ pub(crate) async fn upsert_item(
     sqlx::query_as::<_, TaskBankItem>(&format!(
         "INSERT INTO task_bank_items (
             id, source_id, number, paragraph, topic, text, answer, has_answer, metadata,
-            created_at, updated_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            created_at, updated_at, solution, task_type, difficulty, volume
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          ON CONFLICT (source_id, number) DO UPDATE SET
             paragraph = EXCLUDED.paragraph,
             topic = EXCLUDED.topic,
             text = EXCLUDED.text,
             answer = EXCLUDED.answer,
             has_answer = EXCLUDED.has_answer,
-            metadata = EXCLUDED.metadata,
+            metadata = task_bank_items.metadata || EXCLUDED.metadata,
+            solution = COALESCE(EXCLUDED.solution, task_bank_items.solution),
+            task_type = COALESCE(EXCLUDED.task_type, task_bank_items.task_type),
+            difficulty = COALESCE(EXCLUDED.difficulty, task_bank_items.difficulty),
+            volume = COALESCE(EXCLUDED.volume, task_bank_items.volume),
             updated_at = EXCLUDED.updated_at
          RETURNING {ITEM_COLUMNS}"
     ))
@@ -118,6 +137,10 @@ pub(crate) async fn upsert_item(
     .bind(SqlxJson(params.metadata))
     .bind(params.now)
     .bind(params.now)
+    .bind(params.solution)
+    .bind(params.task_type)
+    .bind(params.difficulty)
+    .bind(params.volume)
     .fetch_one(executor)
     .await
 }
@@ -249,7 +272,9 @@ pub(crate) async fn find_source_by_id(
     .await
 }
 
+#[derive(Clone)]
 pub(crate) struct ListItemsParams {
+    pub(crate) filters: crate::schemas::trainer::TrainerFilters,
     pub(crate) course_id: String,
     pub(crate) source_code: Option<String>,
     pub(crate) paragraph: Option<String>,
@@ -270,6 +295,7 @@ pub(crate) async fn list_items(
                 i.paragraph,
                 i.topic,
                 i.text,
+                i.solution, i.task_type, i.difficulty, i.volume,
                 i.answer,
                 i.has_answer,
                 COUNT(*) OVER() AS total_count
@@ -296,6 +322,8 @@ pub(crate) async fn list_items(
         builder.push(" AND i.has_answer = ");
         builder.push_bind(has_answer);
     }
+
+    push_extended_filters(&mut builder, &params.filters, "i.");
 
     builder.push(
         " ORDER BY
@@ -362,6 +390,7 @@ pub(crate) async fn list_items_with_source_by_ids(
                 i.paragraph,
                 i.topic,
                 i.text,
+                i.solution, i.task_type, i.difficulty, i.volume,
                 i.answer,
                 i.has_answer
          FROM task_bank_items i
@@ -391,6 +420,7 @@ pub(crate) async fn list_items_with_source_by_ids_for_course(
                 i.paragraph,
                 i.topic,
                 i.text,
+                i.solution, i.task_type, i.difficulty, i.volume,
                 i.answer,
                 i.has_answer
          FROM task_bank_items i
@@ -446,6 +476,7 @@ pub(crate) async fn list_items_by_numbers(
 }
 
 pub(crate) struct FilterParams {
+    pub(crate) filters: crate::schemas::trainer::TrainerFilters,
     pub(crate) source_id: String,
     pub(crate) paragraph: Option<String>,
     pub(crate) topic: Option<String>,
@@ -476,6 +507,7 @@ pub(crate) async fn count_items_by_filters(
         builder.push_bind(has_answer);
     }
 
+    push_extended_filters(&mut builder, &params.filters, "");
     builder.build_query_scalar::<i64>().fetch_one(pool).await
 }
 
@@ -504,9 +536,73 @@ pub(crate) async fn list_item_ids_by_filters(
         builder.push_bind(has_answer);
     }
 
+    push_extended_filters(&mut builder, &params.filters, "");
     builder.push(" ORDER BY id");
     builder.push(" LIMIT ");
     builder.push_bind(limit.clamp(1, 50_000));
 
     builder.build_query_scalar::<String>().fetch_all(pool).await
+}
+
+fn push_extended_filters<'a>(
+    builder: &mut QueryBuilder<'a, Postgres>,
+    filters: &'a crate::schemas::trainer::TrainerFilters,
+    prefix: &str,
+) {
+    for (column, value) in [
+        ("task_type", &filters.task_type),
+        ("difficulty", &filters.difficulty),
+        ("volume", &filters.volume),
+    ] {
+        if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            builder.push(format!(" AND {prefix}{column} = ")).push_bind(value);
+        }
+    }
+    if let Some(has_solution) = filters.has_solution {
+        builder.push(format!(" AND ({prefix}solution IS NOT NULL) = ")).push_bind(has_solution);
+    }
+    if let Some(q) = filters.q.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        if q.split_once('.').is_some_and(|(a, b)| {
+            !a.is_empty()
+                && !b.is_empty()
+                && a.bytes().all(|v| v.is_ascii_digit())
+                && b.bytes().all(|v| v.is_ascii_digit())
+        }) {
+            builder.push(format!(" AND {prefix}number = ")).push_bind(q);
+            return;
+        }
+        let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        builder.push(format!(" AND ({prefix}number ILIKE ")).push_bind(format!("%{escaped}%"));
+        builder.push(format!(" OR {prefix}text ILIKE ")).push_bind(format!("%{escaped}%"));
+        builder.push(format!(" OR {prefix}topic ILIKE ")).push_bind(format!("%{escaped}%"));
+        builder.push(")");
+    }
+}
+
+#[derive(serde::Serialize, sqlx::FromRow)]
+pub(crate) struct TaskBankFacets {
+    paragraphs: Vec<String>,
+    topics: Vec<String>,
+    task_types: Vec<String>,
+    difficulties: Vec<String>,
+    volumes: Vec<String>,
+}
+
+pub(crate) async fn facets(
+    pool: &PgPool,
+    course_id: &str,
+    source: Option<&str>,
+) -> Result<TaskBankFacets, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT
+            COALESCE(array_agg(DISTINCT i.paragraph ORDER BY i.paragraph), '{}'::text[]) AS paragraphs,
+            COALESCE(array_agg(DISTINCT i.topic ORDER BY i.topic), '{}'::text[]) AS topics,
+            COALESCE(array_agg(DISTINCT i.task_type ORDER BY i.task_type) FILTER (WHERE i.task_type IS NOT NULL), '{}'::text[]) AS task_types,
+            COALESCE(array_agg(DISTINCT i.difficulty ORDER BY i.difficulty) FILTER (WHERE i.difficulty IS NOT NULL), '{}'::text[]) AS difficulties,
+            COALESCE(array_agg(DISTINCT i.volume ORDER BY i.volume) FILTER (WHERE i.volume IS NOT NULL), '{}'::text[]) AS volumes
+         FROM task_bank_items i
+         JOIN task_bank_sources s ON s.id = i.source_id AND s.is_active
+         JOIN course_task_bank_sources cs ON cs.source_id = s.id
+         WHERE cs.course_id = $1 AND ($2::text IS NULL OR s.code = $2)"
+    ).bind(course_id).bind(source).fetch_one(pool).await
 }

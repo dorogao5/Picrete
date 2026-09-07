@@ -18,6 +18,12 @@ use crate::services::materials::{self, MaterialsError};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct ListTaskBankItemsQuery {
+    pub(crate) q: Option<String>,
+    pub(crate) task_type: Option<String>,
+    pub(crate) difficulty: Option<String>,
+    pub(crate) volume: Option<String>,
+    pub(crate) has_solution: Option<bool>,
+
     #[serde(default)]
     source: Option<String>,
     #[serde(default)]
@@ -74,29 +80,43 @@ pub(super) async fn list_items(
     let skip = query.skip.max(0);
     let limit = query.limit.clamp(1, 1000);
 
-    let rows = repositories::task_bank::list_items(
-        state.db(),
-        repositories::task_bank::ListItemsParams {
-            course_id: course_id.clone(),
-            source_code: query
-                .source
-                .map(|value| value.trim().to_ascii_lowercase())
-                .filter(|value| !value.is_empty()),
-            paragraph: query
-                .paragraph
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
-            topic: query
-                .topic
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
-            has_answer: query.has_answer,
-            skip,
-            limit,
+    let params = repositories::task_bank::ListItemsParams {
+        course_id: course_id.clone(),
+        filters: crate::schemas::trainer::TrainerFilters {
+            q: query.q,
+            task_type: query.task_type,
+            difficulty: query.difficulty,
+            volume: query.volume,
+            has_solution: query.has_solution,
+            ..Default::default()
         },
-    )
-    .await
-    .map_err(|e| ApiError::internal(e, "Failed to list task bank items"))?;
+        source_code: query
+            .source
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty()),
+        paragraph: query
+            .paragraph
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        topic: query.topic.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+        has_answer: query.has_answer,
+        skip,
+        limit,
+    };
+    let rows = repositories::task_bank::list_items(state.db(), params.clone())
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to list task bank items"))?;
+    let total_count = if rows.is_empty() && skip > 0 {
+        let probe = repositories::task_bank::list_items(
+            state.db(),
+            repositories::task_bank::ListItemsParams { skip: 0, limit: 1, ..params },
+        )
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to count task bank items"))?;
+        probe.first().map(|row| row.total_count).unwrap_or(0)
+    } else {
+        rows.first().map(|row| row.total_count).unwrap_or(0)
+    };
 
     let item_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
     let images = repositories::task_bank::list_item_images_by_item_ids(state.db(), &item_ids)
@@ -109,7 +129,6 @@ pub(super) async fn list_items(
     }
 
     let api_prefix = state.settings().api().api_v1_str.trim_end_matches('/');
-    let total_count = rows.first().map(|row| row.total_count).unwrap_or(0);
     let items = rows
         .into_iter()
         .map(|row| {
@@ -139,6 +158,9 @@ pub(super) async fn list_items(
                 text: row.text,
                 has_answer: row.has_answer,
                 answer: can_view_answers.then_some(row.answer).flatten(),
+                has_solution: row.solution.is_some(),
+                solution: can_view_answers.then_some(row.solution).flatten(),
+                task_type: row.task_type, difficulty: row.difficulty, volume: row.volume,
                 images,
             }
         })
@@ -219,4 +241,23 @@ fn map_materials_error(error: MaterialsError) -> ApiError {
         }
         MaterialsError::Io(err) => ApiError::internal(err, "File access failed"),
     }
+}
+
+#[derive(Deserialize)]
+pub(super) struct FacetsQuery {
+    source: Option<String>,
+}
+
+pub(super) async fn list_facets(
+    Path(course_id): Path<String>,
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+    Query(query): Query<FacetsQuery>,
+) -> Result<Json<repositories::task_bank::TaskBankFacets>, ApiError> {
+    require_course_membership(&state, &user, &course_id).await?;
+    let source = query.source.map(|v| v.trim().to_ascii_lowercase()).filter(|v| !v.is_empty());
+    repositories::task_bank::facets(state.db(), &course_id, source.as_deref())
+        .await
+        .map(Json)
+        .map_err(|e| ApiError::internal(e, "Failed to load task bank filters"))
 }

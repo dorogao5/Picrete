@@ -50,6 +50,10 @@ async fn private_trainer_set_keeps_answer_for_owner_self_check() {
     let item = repositories::task_bank::upsert_item(
         ctx.state.db(),
         repositories::task_bank::UpsertItem {
+            solution: None,
+            task_type: None,
+            difficulty: None,
+            volume: None,
             id: "trainer-answer-item",
             source_id: &source.id,
             number: "1.1",

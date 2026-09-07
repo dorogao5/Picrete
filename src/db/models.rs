@@ -300,6 +300,11 @@ pub(crate) struct TaskBankSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub(crate) struct TaskBankItem {
+    pub(crate) solution: Option<String>,
+    pub(crate) task_type: Option<String>,
+    pub(crate) difficulty: Option<String>,
+    pub(crate) volume: Option<String>,
+
     pub(crate) id: String,
     pub(crate) source_id: String,
     pub(crate) number: String,
