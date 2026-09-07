@@ -207,6 +207,8 @@ python3 scripts/enrich_sviridov.py \
 к существующим, заменить `Sviridov_tasks.json` в `TASK_BANK_ROOT`, затем запустить
 новую версию API/worker. Миграции и импорт выполняются при запуске в транзакциях.
 Синхронизировать набор миграций у Telegram-бота на отдельном хосте.
+В production задавать `TASK_BANK_VOLUME=/srv/picrete/shared/tasks`, чтобы банк
+хранился отдельно от чистого Git checkout и сохранялся между выпусками.
 
 `GET /courses/:course_id/task-bank/facets?source=sviridov` возвращает значения
 фильтров только из источников текущего курса. `/items` и генератор тренажёров

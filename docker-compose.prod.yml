@@ -8,7 +8,7 @@ services:
         BUILD_REVISION: ${RELEASE_SHA:-unknown}
     network_mode: host
     volumes:
-      - ./tasks:/app/tasks:ro
+      - ${TASK_BANK_VOLUME:-./tasks}:/app/tasks:ro
     environment:
       - PICRETE_HOST=127.0.0.1
       - COURSE_CONTEXT_MODE=route
@@ -88,7 +88,7 @@ services:
     network_mode: host
     command: ["picrete-worker"]
     volumes:
-      - ./tasks:/app/tasks:ro
+      - ${TASK_BANK_VOLUME:-./tasks}:/app/tasks:ro
       - ./migrations:/app/migrations:ro
     environment:
       - PICRETE_HOST=127.0.0.1
@@ -156,7 +156,7 @@ services:
     network_mode: host
     command: ["picrete-telegram-bot"]
     volumes:
-      - ./tasks:/app/tasks:ro
+      - ${TASK_BANK_VOLUME:-./tasks}:/app/tasks:ro
       - ./migrations:/app/migrations:ro
     environment:
       - PICRETE_HOST=127.0.0.1
