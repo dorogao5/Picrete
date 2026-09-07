@@ -1,13 +1,18 @@
 use axum::{
+    body::Body,
     extract::DefaultBodyLimit,
-    http::header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, ORIGIN},
+    http::header::{
+        HeaderValue, ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, ORIGIN,
+        STRICT_TRANSPORT_SECURITY,
+    },
     http::{HeaderName, Method, Request, Response},
+    middleware::{self, Next},
     routing::get,
     Router,
 };
 use std::time::Duration;
 use tower_http::{
-    cors::{AllowOrigin, Any, CorsLayer},
+    cors::{AllowOrigin, CorsLayer},
     normalize_path::NormalizePathLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
@@ -83,8 +88,10 @@ pub(crate) fn router(state: AppState) -> Router {
             .record(latency.as_secs_f64());
         });
 
+    let production = state.settings().runtime().environment.as_str() == "production";
     let mut router: Router<AppState> = Router::new()
         .route("/", get(handlers::root))
+        .route("/version", get(handlers::version))
         .route("/healthz", get(handlers::healthz).head(handlers::healthz))
         .route("/readyz", get(handlers::readyz).head(handlers::readyz))
         .nest(&api_v1_prefix, api_v1)
@@ -92,7 +99,12 @@ pub(crate) fn router(state: AppState) -> Router {
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
         .layer(trace_layer)
+        .layer(middleware::from_fn(add_security_headers))
         .layer(cors);
+
+    if production {
+        router = router.layer(middleware::from_fn(add_hsts));
+    }
 
     if state.settings().telemetry().prometheus_enabled {
         router = router.route("/metrics", get(handlers::metrics));
@@ -106,7 +118,10 @@ fn build_cors_layer(settings: &Settings) -> CorsLayer {
         .cors()
         .origins
         .iter()
-        .filter_map(|origin| HeaderValue::from_str(origin).ok())
+        .map(|origin| {
+            HeaderValue::from_str(origin)
+                .expect("CORS origins are validated while application settings are loaded")
+        })
         .collect::<Vec<_>>();
 
     let base = CorsLayer::new()
@@ -128,18 +143,58 @@ fn build_cors_layer(settings: &Settings) -> CorsLayer {
         .expose_headers([HeaderName::from_static("x-request-id")])
         .max_age(Duration::from_secs(3600));
 
-    if origins.is_empty() {
-        // Wildcard origin cannot be combined with allow_credentials
-        base.allow_origin(Any)
-    } else {
-        base.allow_credentials(true).allow_origin(AllowOrigin::list(origins))
+    base.allow_credentials(true).allow_origin(AllowOrigin::list(origins))
+}
+
+async fn add_security_headers(request: Request<Body>, next: Next) -> Response<Body> {
+    let protected_api = request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(HeaderName::from_static("x-frame-options"), HeaderValue::from_static("DENY"));
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-site"),
+    );
+    if protected_api {
+        headers.insert(
+            CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store, max-age=0, must-revalidate"),
+        );
     }
+    response
+}
+
+async fn add_hsts(request: Request<Body>, next: Next) -> Response<Body> {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
+    response
 }
 
 #[cfg(test)]
 mod tests {
     use super::router;
     use axum::{body::to_bytes, body::Body, http::Request, http::StatusCode};
+    use sqlx::postgres::PgPoolOptions;
+    use std::time::Duration;
     use tower::ServiceExt;
 
     use crate::core::redis::RedisHandle;
@@ -210,5 +265,65 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn health_and_readiness_succeed_without_sensitive_details() {
+        let ctx = test_support::setup_test_context().await;
+
+        let health = ctx
+            .app
+            .clone()
+            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .await
+            .expect("health response");
+        assert_eq!(health.status(), StatusCode::OK);
+        let health_body = to_bytes(health.into_body(), usize::MAX).await.unwrap();
+        let health_json: serde_json::Value = serde_json::from_slice(&health_body).unwrap();
+        assert_eq!(health_json["components"]["database"], "healthy");
+        assert_eq!(health_json["components"]["redis"], "healthy");
+
+        let ready = ctx
+            .app
+            .oneshot(Request::builder().uri("/readyz").body(Body::empty()).unwrap())
+            .await
+            .expect("readiness response");
+        assert_eq!(ready.status(), StatusCode::OK);
+        let ready_body = to_bytes(ready.into_body(), usize::MAX).await.unwrap();
+        let ready_json: serde_json::Value = serde_json::from_slice(&ready_body).unwrap();
+        assert_eq!(ready_json["status"], "ready");
+        assert_eq!(ready_json["components"]["database"], "ready");
+    }
+
+    #[tokio::test]
+    async fn degraded_readiness_is_opaque() {
+        let _guard = test_support::env_lock().await;
+        test_support::set_test_env();
+        let settings = Settings::load().expect("settings");
+        let unavailable_url = "postgresql://audit_user:audit_password@127.0.0.1:1/audit_db";
+        let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(250))
+            .connect_lazy(unavailable_url)
+            .expect("lazy unavailable pool");
+        let redis = RedisHandle::new(settings.redis().redis_url());
+        let app = router(AppState::new(settings, db, redis, None));
+
+        let response = app
+            .oneshot(Request::builder().uri("/readyz").body(Body::empty()).unwrap())
+            .await
+            .expect("readiness response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "not_ready");
+        assert_eq!(json["components"]["database"], "not_ready");
+
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        for secret in ["audit_user", "audit_password", "127.0.0.1", "connection refused"] {
+            assert!(
+                !text.to_ascii_lowercase().contains(secret),
+                "leaked dependency detail: {text}"
+            );
+        }
     }
 }

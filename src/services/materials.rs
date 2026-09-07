@@ -12,6 +12,8 @@ pub(crate) enum MaterialsError {
     PathOutsideRoot,
     #[error("file not found")]
     NotFound,
+    #[error("invalid or mismatched media content")]
+    InvalidMedia,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -101,6 +103,50 @@ pub(crate) fn guess_mime(path: &Path) -> &'static str {
     }
 }
 
+pub(crate) fn detect_image_mime(bytes: &[u8]) -> Result<&'static str, MaterialsError> {
+    match image::guess_format(bytes).map_err(|_| MaterialsError::InvalidMedia)? {
+        image::ImageFormat::Jpeg => Ok("image/jpeg"),
+        image::ImageFormat::Png => Ok("image/png"),
+        image::ImageFormat::WebP => Ok("image/webp"),
+        image::ImageFormat::Gif => Ok("image/gif"),
+        _ => Err(MaterialsError::InvalidMedia),
+    }
+}
+
+pub(crate) fn validate_pdf_bytes(bytes: &[u8]) -> Result<(), MaterialsError> {
+    if bytes.starts_with(b"%PDF-") {
+        Ok(())
+    } else {
+        Err(MaterialsError::InvalidMedia)
+    }
+}
+
+pub(crate) fn inline_content_disposition(filename: &str) -> String {
+    let fallback = filename
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let fallback = if fallback.is_empty() { "file" } else { &fallback };
+    let encoded = filename
+        .as_bytes()
+        .iter()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'-') {
+                (*byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect::<String>();
+    format!("inline; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
+}
+
 fn resolve_config_path(value: &str) -> Result<PathBuf, MaterialsError> {
     let path = PathBuf::from(value);
     if path.is_absolute() {
@@ -139,5 +185,19 @@ mod tests {
             normalize_sviridov_image_path("ocr_output/Sviridov_tasks/page_0011/images/0.jpg")
                 .expect("normalized");
         assert_eq!(result, "page_0011/images/0.jpg");
+    }
+
+    #[test]
+    fn disposition_cannot_inject_headers() {
+        let value = inline_content_disposition("x\r\nX-Evil: yes.png");
+        assert!(!value.contains('\r'));
+        assert!(!value.contains('\n'));
+        assert!(value.contains("filename*=UTF-8''"));
+    }
+
+    #[test]
+    fn media_magic_is_enforced() {
+        assert_eq!(detect_image_mime(b"\x89PNG\r\n\x1a\nrest").unwrap(), "image/png");
+        assert!(validate_pdf_bytes(b"not-pdf").is_err());
     }
 }

@@ -28,7 +28,8 @@ pub(crate) async fn healthz(State(state): State<AppState>) -> Json<HealthRespons
             components.insert("redis".to_string(), "disconnected".to_string());
         }
         crate::core::redis::RedisHealth::Unhealthy(error) => {
-            components.insert("redis".to_string(), format!("unhealthy: {error}"));
+            tracing::warn!(error = %error, dependency = "redis", "Health dependency check failed");
+            components.insert("redis".to_string(), "unhealthy".to_string());
             status = "degraded".to_string();
         }
     }
@@ -38,7 +39,8 @@ pub(crate) async fn healthz(State(state): State<AppState>) -> Json<HealthRespons
             components.insert("database".to_string(), "healthy".to_string());
         }
         Err(err) => {
-            components.insert("database".to_string(), format!("unhealthy: {err}"));
+            tracing::warn!(error = %err, dependency = "database", "Health dependency check failed");
+            components.insert("database".to_string(), "unhealthy".to_string());
             status = "unhealthy".to_string();
         }
     }
@@ -63,7 +65,8 @@ pub(crate) async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
                 .into_response()
         }
         Err(err) => {
-            components.insert("database".to_string(), format!("not_ready: {err}"));
+            tracing::warn!(error = %err, dependency = "database", "Readiness dependency check failed");
+            components.insert("database".to_string(), "not_ready".to_string());
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(HealthResponse {
@@ -87,4 +90,12 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
             .into_response(),
         None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
+}
+
+pub(crate) async fn version() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "service": "picrete-api",
+        "revision": option_env!("BUILD_REVISION").unwrap_or("development"),
+        "studio_snapshot_schema": 1,
+    }))
 }

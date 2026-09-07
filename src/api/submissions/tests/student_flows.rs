@@ -143,6 +143,162 @@ async fn student_can_submit_exam() {
 }
 
 #[tokio::test]
+async fn first_attempt_result_does_not_leak_feedback_before_release() {
+    let ctx = test_support::setup_test_context().await;
+    let teacher = test_support::insert_user(
+        ctx.state.db(),
+        "feedback_teacher",
+        "Teacher User",
+        "teacher-pass",
+    )
+    .await;
+    let student = test_support::insert_user(
+        ctx.state.db(),
+        "feedback_student",
+        "Student User",
+        "student-pass",
+    )
+    .await;
+    let course = test_support::create_course_with_teacher(
+        ctx.state.db(),
+        "feedback-release-101",
+        "Feedback Release",
+        &teacher.id,
+    )
+    .await;
+    test_support::add_course_role(ctx.state.db(), &course.id, &student.id, CourseRole::Student)
+        .await;
+    let teacher_token = test_support::bearer_token(&teacher.id, ctx.state.settings());
+    let student_token = test_support::bearer_token(&student.id, ctx.state.settings());
+
+    let mut payload = exam_payload();
+    payload["max_attempts"] = json!(2);
+    let created = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/exams", course.id),
+            Some(&teacher_token),
+            Some(payload),
+        ))
+        .await
+        .expect("create exam");
+    let created = test_support::read_json(created).await;
+    let exam_id = created["id"].as_str().expect("exam id");
+    let publish = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/exams/{exam_id}/publish", course.id),
+            Some(&teacher_token),
+            None,
+        ))
+        .await
+        .expect("publish exam");
+    assert_eq!(publish.status(), StatusCode::OK);
+
+    let entered = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/submissions/exams/{exam_id}/enter", course.id),
+            Some(&student_token),
+            None,
+        ))
+        .await
+        .expect("enter exam");
+    let entered = test_support::read_json(entered).await;
+    let session_id = entered["id"].as_str().expect("session id");
+    let (submission_id, _) = super::insert_submission_with_one_image(
+        ctx.state.db(),
+        &course.id,
+        session_id,
+        &student.id,
+        exam_id,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE submissions SET ai_score = 10, final_score = 10, ai_analysis = $1, \
+         ai_comments = $2, teacher_comments = $3, is_flagged = TRUE, flag_reasons = $4 \
+         WHERE course_id = $5 AND id = $6",
+    )
+    .bind(sqlx::types::Json(json!({"expected_answer": "secret"})))
+    .bind("AI says the answer is secret")
+    .bind("Teacher says the answer is secret")
+    .bind(sqlx::types::Json(vec!["reference mismatch: secret".to_string()]))
+    .bind(&course.id)
+    .bind(&submission_id)
+    .execute(ctx.state.db())
+    .await
+    .expect("seed protected feedback");
+    let task_type_id: String =
+        sqlx::query_scalar("SELECT id FROM task_types WHERE course_id = $1 AND exam_id = $2")
+            .bind(&course.id)
+            .bind(exam_id)
+            .fetch_one(ctx.state.db())
+            .await
+            .expect("task type");
+    sqlx::query(
+        "INSERT INTO submission_scores (id, course_id, submission_id, task_type_id, \
+         criterion_name, ai_score, final_score, max_score, ai_comment, teacher_comment) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&course.id)
+    .bind(&submission_id)
+    .bind(task_type_id)
+    .bind("Secret criterion")
+    .bind(10.0_f64)
+    .bind(10.0_f64)
+    .bind(10.0_f64)
+    .bind("AI criterion secret")
+    .bind("Teacher criterion secret")
+    .execute(ctx.state.db())
+    .await
+    .expect("seed protected score");
+
+    let repeated_submit = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/submissions/sessions/{session_id}/submit", course.id),
+            Some(&student_token),
+            None,
+        ))
+        .await
+        .expect("repeated submit");
+    assert_eq!(repeated_submit.status(), StatusCode::OK);
+    let repeated_body = test_support::read_json(repeated_submit).await;
+    for field in ["ai_score", "final_score", "ai_analysis", "ai_comments", "teacher_comments"] {
+        assert!(repeated_body[field].is_null(), "repeat leaked {field}");
+    }
+    assert_eq!(repeated_body["scores"], json!([]));
+
+    let response = ctx
+        .app
+        .oneshot(test_support::json_request(
+            Method::GET,
+            &format!("/api/v1/courses/{}/submissions/sessions/{session_id}/result", course.id),
+            Some(&student_token),
+            None,
+        ))
+        .await
+        .expect("result response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = test_support::read_json(response).await;
+    assert_eq!(body["feedback_released"], false);
+    for field in ["ai_score", "final_score", "ai_analysis", "ai_comments", "teacher_comments"] {
+        assert!(body[field].is_null(), "field {field} leaked: {body}");
+    }
+    assert_eq!(body["flag_reasons"], json!([]));
+    assert_eq!(body["scores"], json!([]));
+}
+
+#[tokio::test]
 async fn uploaded_images_are_persistent_and_deletable() {
     let ctx = test_support::setup_test_context().await;
 

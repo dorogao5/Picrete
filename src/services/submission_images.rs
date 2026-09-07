@@ -372,7 +372,10 @@ fn normalize_jpeg_orientation(file_bytes: Vec<u8>, mime_type: &str) -> Vec<u8> {
             out
         }
         Err(error) => {
-            tracing::warn!(?error, "Failed to re-encode JPEG after orientation fix, keeping original");
+            tracing::warn!(
+                ?error,
+                "Failed to re-encode JPEG after orientation fix, keeping original"
+            );
             file_bytes
         }
     }

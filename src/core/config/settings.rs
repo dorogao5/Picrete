@@ -322,6 +322,16 @@ impl Settings {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
+        if self.security.algorithm != "HS256" {
+            return Err(ConfigError::InvalidValue {
+                field: "ALGORITHM",
+                value: self.security.algorithm.clone(),
+            });
+        }
+        if self.cors.origins.is_empty() {
+            return Err(ConfigError::InvalidCors("<empty>".to_string()));
+        }
+
         if self.storage.allowed_image_extensions.is_empty() {
             return Err(ConfigError::InvalidValue {
                 field: "ALLOWED_IMAGE_EXTENSIONS",
@@ -411,6 +421,13 @@ impl Settings {
 
         if !(self.runtime.strict_config || self.runtime.environment.is_production()) {
             return Ok(());
+        }
+
+        if self.security.secret_key.as_bytes().len() < 32 {
+            return Err(ConfigError::InvalidValue {
+                field: "SECRET_KEY",
+                value: "<redacted: fewer than 32 bytes>".to_string(),
+            });
         }
 
         if self.database.database_url.is_none() && self.database.postgres_password.is_empty() {

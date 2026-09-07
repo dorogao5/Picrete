@@ -131,13 +131,27 @@ pub(crate) async fn import_sviridov(
                         "image file is missing for task {number}: {normalized_relative_path}"
                     )
                         })?;
+                let bytes = tokio::fs::read(&resolved).await.with_context(|| {
+                    format!(
+                        "failed to read image file for task {number}: {normalized_relative_path}"
+                    )
+                })?;
+                let detected_mime = materials::detect_image_mime(&bytes).with_context(|| {
+                    format!("invalid image content for task {number}: {normalized_relative_path}")
+                })?;
+                let extension_mime = materials::guess_mime(&resolved);
+                if detected_mime != extension_mime {
+                    return Err(anyhow!(
+                        "image MIME mismatch for task {number}: {normalized_relative_path} ({extension_mime} vs {detected_mime})"
+                    ));
+                }
 
                 images.push(repositories::task_bank::CreateItemImage {
                     id: stable_image_id(number, order_index),
                     task_bank_item_id: item.id.clone(),
                     relative_path: normalized_relative_path,
                     order_index: order_index as i32,
-                    mime_type: materials::guess_mime(&resolved).to_string(),
+                    mime_type: detected_mime.to_string(),
                     created_at: now,
                 });
                 imported_images += 1;

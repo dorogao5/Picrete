@@ -40,11 +40,18 @@ pub(in crate::api::submissions) async fn submit_exam(
     let finalized = finalize_submission(&state, &session, FinalizeMode::ManualSubmit, now)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to finalize submission"))?;
-    let base = crate::api::submissions::helpers::to_submission_response(
+    let mut base = crate::api::submissions::helpers::to_submission_response(
         finalized.submission,
         finalized.images,
         finalized.scores,
     );
+
+    let exam =
+        crate::api::submissions::helpers::fetch_exam(state.db(), &course_id, &session.exam_id)
+            .await?;
+    if !super::feedback_is_released(&session, &exam) {
+        super::redact_submission_feedback(&mut base);
+    }
 
     tracing::info!(
         course_id = %course_id,
@@ -97,6 +104,13 @@ pub(in crate::api::submissions) async fn get_session_result(
     let scores =
         crate::api::submissions::helpers::fetch_scores(state.db(), &course_id, &submission.id)
             .await?;
+    let feedback_released = super::feedback_is_released(&session, &exam);
+    let ai_analysis =
+        feedback_released.then(|| submission.ai_analysis.map(|value| value.0)).flatten();
+    let ai_comments = feedback_released.then_some(submission.ai_comments).flatten();
+    let scores = feedback_released.then_some(scores).unwrap_or_default();
+    let teacher_comments = feedback_released.then_some(submission.teacher_comments).flatten();
+    let flag_reasons = feedback_released.then_some(submission.flag_reasons.0).unwrap_or_default();
 
     Ok(Json(serde_json::json!({
         "id": submission.id,
@@ -108,19 +122,22 @@ pub(in crate::api::submissions) async fn get_session_result(
         "ocr_overall_status": submission.ocr_overall_status,
         "llm_precheck_status": submission.llm_precheck_status,
         "report_flag": submission.report_flag,
-        "report_summary": submission.report_summary,
-        "ocr_error": submission.ocr_error,
-        "llm_error": submission.ai_error,
-        "ai_score": submission.ai_score,
-        "final_score": submission.final_score,
+        "report_summary": feedback_released.then_some(submission.report_summary).flatten(),
+        "ocr_error": feedback_released.then_some(submission.ocr_error).flatten(),
+        "llm_error": feedback_released.then_some(submission.ai_error).flatten(),
+        "ai_score": feedback_released.then_some(submission.ai_score).flatten(),
+        "final_score": feedback_released.then_some(submission.final_score).flatten(),
         "max_score": submission.max_score,
-        "ai_analysis": submission.ai_analysis.map(|v| v.0),
-        "ai_comments": submission.ai_comments,
-        "teacher_comments": submission.teacher_comments,
+        "feedback_released": feedback_released,
+        "ai_analysis": ai_analysis,
+        "ai_comments": ai_comments,
+        "teacher_comments": teacher_comments,
         "is_flagged": submission.is_flagged,
-        "flag_reasons": submission.flag_reasons.0,
-        "reviewed_by": submission.reviewed_by,
-        "reviewed_at": submission.reviewed_at.map(format_primitive),
+        "flag_reasons": flag_reasons,
+        "reviewed_by": feedback_released.then_some(submission.reviewed_by).flatten(),
+        "reviewed_at": feedback_released
+            .then(|| submission.reviewed_at.map(format_primitive))
+            .flatten(),
         "images": images,
         "scores": scores,
         "exam": {

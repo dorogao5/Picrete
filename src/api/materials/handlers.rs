@@ -34,6 +34,7 @@ pub(super) async fn view_addition_pdf(
     let bytes = tokio::fs::read(&pdf_path)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to read additional materials pdf"))?;
+    materials::validate_pdf_bytes(&bytes).map_err(map_materials_error)?;
 
     let mut response = (StatusCode::OK, bytes).into_response();
     response
@@ -41,10 +42,11 @@ pub(super) async fn view_addition_pdf(
         .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/pdf"));
     response
         .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=3600"));
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
     response.headers_mut().insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_static("inline; filename=\"addition.pdf\""),
+        HeaderValue::from_str(&materials::inline_content_disposition("addition.pdf"))
+            .expect("fixed PDF filename is a valid header value"),
     );
     Ok(response)
 }
@@ -61,18 +63,29 @@ pub(super) async fn view_task_bank_image(
     let bytes = tokio::fs::read(&file_path)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to read task bank image file"))?;
-    let mime = materials::guess_mime(&file_path);
+    let mime = materials::detect_image_mime(&bytes).map_err(map_materials_error)?;
+    let extension_mime = materials::guess_mime(&file_path);
+    if mime != extension_mime {
+        tracing::error!(
+            path = %file_path.display(),
+            extension_mime,
+            detected_mime = mime,
+            "Task bank image MIME does not match its extension"
+        );
+        return Err(ApiError::Internal("Task bank image metadata is invalid".to_string()));
+    }
 
     let mut response = (StatusCode::OK, bytes).into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(mime)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-    );
+    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     response
         .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400"));
-    response.headers_mut().insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("inline"));
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    let filename = file_path.file_name().and_then(|value| value.to_str()).unwrap_or("image");
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&materials::inline_content_disposition(filename))
+            .map_err(|_| ApiError::Internal("Invalid image filename".to_string()))?,
+    );
     Ok(response)
 }
 
@@ -84,6 +97,9 @@ fn map_materials_error(error: MaterialsError) -> ApiError {
             ApiError::Forbidden("Path is not allowed")
         }
         MaterialsError::NotFound => ApiError::NotFound("File not found".to_string()),
+        MaterialsError::InvalidMedia => {
+            ApiError::Internal("Protected media content is invalid".to_string())
+        }
         MaterialsError::Io(err) => ApiError::internal(err, "File access failed"),
     }
 }

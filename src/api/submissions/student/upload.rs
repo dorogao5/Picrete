@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::api::errors::ApiError;
 use crate::api::guards::{require_course_role, CurrentUser};
-use crate::api::validation::validate_image_upload;
+use crate::api::validation::{validate_image_bytes, validate_image_upload};
 use crate::core::state::AppState;
 use crate::db::types::{CourseRole, SessionStatus};
 use crate::services::submission_images::SubmissionImagesService;
@@ -134,6 +134,7 @@ pub(in crate::api::submissions) async fn upload_image(
         &content_type,
         &state.settings().storage().allowed_image_extensions,
     )?;
+    validate_image_bytes(&content_type, &file_bytes)?;
 
     if file_bytes.len() as u64 > max_bytes {
         return Err(ApiError::BadRequest(format!(

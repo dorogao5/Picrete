@@ -8,7 +8,7 @@ use crate::api::errors::ApiError;
 use crate::api::guards::{require_course_role, CurrentUser};
 use crate::api::pagination::PaginatedResponse;
 use crate::core::state::AppState;
-use crate::db::types::CourseRole;
+use crate::db::types::{CourseRole, SessionStatus};
 use crate::repositories;
 use crate::schemas::submission::{
     format_primitive, SubmissionImageResponse, SubmissionScoreResponse,
@@ -54,11 +54,11 @@ pub(in crate::api::submissions) async fn get_my_submissions(
         .collect::<HashMap<_, _>>();
 
     let exam_ids = sessions.iter().map(|session| session.exam_id.clone()).collect::<Vec<_>>();
-    let exam_titles = repositories::exams::list_titles_by_ids(state.db(), &course_id, &exam_ids)
+    let exams = repositories::exams::list_by_ids(state.db(), &course_id, &exam_ids)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to fetch exam titles"))?
         .into_iter()
-        .map(|(id, title, kind)| (id, (title, kind)))
+        .map(|exam| (exam.id.clone(), exam))
         .collect::<HashMap<_, _>>();
 
     let submission_ids =
@@ -125,12 +125,13 @@ pub(in crate::api::submissions) async fn get_my_submissions(
             .and_then(|id| scores_by_submission.remove(id))
             .unwrap_or_default();
 
-        let exam_meta = exam_titles.get(&session.exam_id).cloned();
-        let exam_title = exam_meta
-            .as_ref()
-            .map(|(title, _)| title.clone())
-            .unwrap_or_else(|| "Unknown".to_string());
-        let exam_kind = exam_meta.map(|(_, kind)| kind);
+        let exam = exams.get(&session.exam_id);
+        let feedback_released =
+            exam.is_some_and(|exam| super::feedback_is_released(&session, exam));
+        let scores = feedback_released.then_some(scores).unwrap_or_default();
+        let exam_title =
+            exam.map(|exam| exam.title.clone()).unwrap_or_else(|| "Unknown".to_string());
+        let exam_kind = exam.map(|exam| exam.kind);
 
         response.push(serde_json::json!({
             "id": submission.as_ref().map(|s| &s.id),
@@ -144,12 +145,21 @@ pub(in crate::api::submissions) async fn get_my_submissions(
             "ocr_overall_status": submission.as_ref().map(|s| &s.ocr_overall_status),
             "llm_precheck_status": submission.as_ref().map(|s| &s.llm_precheck_status),
             "report_flag": submission.as_ref().map(|s| s.report_flag).unwrap_or(false),
-            "ai_score": submission.as_ref().and_then(|s| s.ai_score),
-            "final_score": submission.as_ref().and_then(|s| s.final_score),
+            "ai_score": feedback_released.then(|| submission.as_ref().and_then(|s| s.ai_score)).flatten(),
+            "final_score": feedback_released.then(|| submission.as_ref().and_then(|s| s.final_score)).flatten(),
             "max_score": submission.as_ref().map(|s| s.max_score),
+            "feedback_released": feedback_released,
             "images": images,
             "scores": scores,
-            "teacher_comments": submission.as_ref().and_then(|s| s.teacher_comments.clone()),
+            "teacher_comments": feedback_released
+                .then(|| submission.as_ref().and_then(|s| s.teacher_comments.clone()))
+                .flatten(),
+            "description": exam.and_then(|exam| exam.description.clone()),
+            "max_attempts": exam.map(|exam| exam.max_attempts),
+            "allow_breaks": exam.map(|exam| exam.allow_breaks),
+            "break_duration_minutes": exam.map(|exam| exam.break_duration_minutes),
+            "attempt_number": session.attempt_number,
+            "has_active_session": matches!(session.status, SessionStatus::Active),
         }));
     }
 

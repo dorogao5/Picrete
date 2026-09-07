@@ -361,6 +361,8 @@ async fn load_set_response(
                 topic: item.topic,
                 text: item.text,
                 has_answer: item.has_answer,
+                // Trainer sets are private to their student owner and intentionally support
+                // self-check. Assessment endpoints redact the same answer independently.
                 answer: item.answer,
                 images,
             }

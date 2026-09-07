@@ -55,6 +55,30 @@ pub(crate) fn validate_image_upload(
     }
 }
 
+pub(crate) fn validate_image_bytes(content_type: &str, bytes: &[u8]) -> Result<(), ApiError> {
+    let detected = image::guess_format(bytes)
+        .map_err(|_| ApiError::BadRequest("File content is not a supported image".to_string()))?;
+    let detected_mime = match detected {
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::WebP => "image/webp",
+        image::ImageFormat::Gif => "image/gif",
+        _ => {
+            return Err(ApiError::BadRequest(
+                "File content is not an allowed image format".to_string(),
+            ))
+        }
+    };
+    let claimed = content_type.trim().to_ascii_lowercase();
+    let claimed = if claimed == "image/jpg" { "image/jpeg" } else { claimed.as_str() };
+    if claimed != detected_mime {
+        return Err(ApiError::BadRequest(format!(
+            "MIME type '{claimed}' does not match detected file type '{detected_mime}'"
+        )));
+    }
+    Ok(())
+}
+
 fn mime_allowed_for_extension(mime: &str, extension: &str) -> bool {
     match extension {
         "jpg" | "jpeg" => matches!(mime, "image/jpeg" | "image/jpg"),
@@ -62,5 +86,18 @@ fn mime_allowed_for_extension(mime: &str, extension: &str) -> bool {
         "webp" => mime == "image/webp",
         "gif" => mime == "image/gif",
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_image_bytes;
+
+    #[test]
+    fn image_bytes_must_match_claimed_mime() {
+        let png = b"\x89PNG\r\n\x1a\nrest";
+        assert!(validate_image_bytes("image/png", png).is_ok());
+        assert!(validate_image_bytes("image/jpeg", png).is_err());
+        assert!(validate_image_bytes("image/png", b"not an image").is_err());
     }
 }

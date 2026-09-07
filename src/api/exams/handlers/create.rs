@@ -219,6 +219,26 @@ pub(in crate::api::exams) async fn add_task_types_from_bank(
         images_by_item.entry(image.task_bank_item_id.clone()).or_default().push(image);
     }
 
+    let mut content_issues = Vec::new();
+    for item_id in &ordered_ids {
+        let item = by_id
+            .get(item_id)
+            .ok_or_else(|| ApiError::Internal("Task bank item lookup failed".to_string()))?;
+        content_issues.extend(crate::services::content_integrity::validate_bank_item(
+            &item.number,
+            &item.text,
+            item.answer.as_deref(),
+            item.has_answer,
+            images_by_item.get(item_id).is_some_and(|images| !images.is_empty()),
+        ));
+    }
+    if !content_issues.is_empty() {
+        return Err(ApiError::UnprocessableEntity(format!(
+            "Task bank items failed assessment checks: {}",
+            crate::services::content_integrity::format_issues(&content_issues)
+        )));
+    }
+
     let existing_task_types =
         repositories::task_types::list_by_exam(state.db(), &course_id, &exam_id)
             .await
@@ -263,6 +283,10 @@ pub(in crate::api::exams) async fn add_task_types_from_bank(
                     "source": "task_bank",
                     "source_code": source_code.clone(),
                     "number": item_number.clone(),
+                    "criteria": [{
+                        "criterion_name": "Correct answer",
+                        "max_score": 1.0,
+                    }],
                 }),
                 difficulty: crate::db::types::DifficultyLevel::Medium,
                 taxonomy_tags: vec![item_topic.clone()],

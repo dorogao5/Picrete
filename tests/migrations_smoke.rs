@@ -1,36 +1,25 @@
 use sqlx::Row;
 
-fn database_url() -> Option<String> {
-    // Load .env so POSTGRES_* from .env are available (integration tests don't use app config)
-    dotenvy::dotenv().ok();
-
-    if let Ok(url) = std::env::var("DATABASE_URL") {
-        if !url.trim().is_empty() {
-            return Some(url);
-        }
-    }
-
-    // Build from POSTGRES_* (same as app config)
-    let server = std::env::var("POSTGRES_SERVER").unwrap_or_else(|_| "localhost".into());
-    let port = std::env::var("POSTGRES_PORT").unwrap_or_else(|_| "5432".into());
-    let user = std::env::var("POSTGRES_USER").unwrap_or_else(|_| "picretesuperuser".into());
-    let password = std::env::var("POSTGRES_PASSWORD").unwrap_or_default();
-    let db = std::env::var("POSTGRES_DB").unwrap_or_else(|_| "picrete_db".into());
-
-    Some(format!("postgresql://{user}:{password}@{server}:{port}/{db}"))
+fn database_url() -> String {
+    // Never infer a migration-test target from production .env credentials.
+    std::env::var("PICRETE_TEST_DATABASE_URL").unwrap_or_else(|_| {
+        "postgresql://picrete_test:picrete_test@localhost:5432/picrete_rust_test".to_string()
+    })
 }
 
 #[tokio::test]
 async fn migrations_apply_and_tables_exist() -> anyhow::Result<()> {
-    let database_url = match database_url() {
-        Some(url) => url,
-        None => {
-            anyhow::bail!("DATABASE_URL and POSTGRES_* are not set");
-        }
-    };
+    let database_url = database_url();
 
     let pool =
         sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&database_url).await?;
+
+    let database_name: String =
+        sqlx::query_scalar("SELECT current_database()").fetch_one(&pool).await?;
+    anyhow::ensure!(
+        database_name.ends_with("_test"),
+        "Migration smoke tests require a test database"
+    );
 
     let migrations_dir =
         std::env::var("PICRETE_MIGRATIONS_DIR").unwrap_or_else(|_| "migrations".to_string());

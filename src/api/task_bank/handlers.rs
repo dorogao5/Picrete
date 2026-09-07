@@ -67,7 +67,9 @@ pub(super) async fn list_items(
     State(state): State<AppState>,
     Query(query): Query<ListTaskBankItemsQuery>,
 ) -> Result<Json<PaginatedResponse<TaskBankItemResponse>>, ApiError> {
-    require_course_membership(&state, &user, &course_id).await?;
+    let access = require_course_membership(&state, &user, &course_id).await?;
+    let can_view_answers = user.is_platform_admin
+        || access.roles.iter().any(|role| matches!(role, crate::db::types::CourseRole::Teacher));
 
     let skip = query.skip.max(0);
     let limit = query.limit.clamp(1, 1000);
@@ -136,7 +138,7 @@ pub(super) async fn list_items(
                 topic: row.topic,
                 text: row.text,
                 has_answer: row.has_answer,
-                answer: row.answer,
+                answer: can_view_answers.then_some(row.answer).flatten(),
                 images,
             }
         })
@@ -178,17 +180,28 @@ pub(super) async fn view_item_image(
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to read image file"))?;
+    let detected_mime = materials::detect_image_mime(&bytes).map_err(map_materials_error)?;
+    if detected_mime != image.mime_type {
+        tracing::error!(
+            image_id = %image.id,
+            declared_mime = %image.mime_type,
+            detected_mime,
+            "Task bank image MIME does not match stored metadata"
+        );
+        return Err(ApiError::Internal("Task bank image metadata is invalid".to_string()));
+    }
 
     let mut response = (StatusCode::OK, bytes).into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(&image.mime_type)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-    );
+    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(detected_mime));
     response
         .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400"));
-    response.headers_mut().insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("inline"));
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    let filename = path.file_name().and_then(|value| value.to_str()).unwrap_or("image");
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&materials::inline_content_disposition(filename))
+            .map_err(|_| ApiError::Internal("Invalid image filename".to_string()))?,
+    );
 
     Ok(response)
 }
@@ -201,6 +214,9 @@ fn map_materials_error(error: MaterialsError) -> ApiError {
             ApiError::Forbidden("Path is not allowed")
         }
         MaterialsError::NotFound => ApiError::NotFound("File not found".to_string()),
+        MaterialsError::InvalidMedia => {
+            ApiError::Internal("Protected media content is invalid".to_string())
+        }
         MaterialsError::Io(err) => ApiError::internal(err, "File access failed"),
     }
 }

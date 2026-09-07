@@ -1,0 +1,3 @@
+[resolver]
+# Keep lockfile refreshes compatible with the repository's pinned Rust 1.88 toolchain.
+incompatible-rust-versions = "fallback"

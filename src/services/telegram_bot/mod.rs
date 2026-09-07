@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use crate::api::validation::validate_image_upload;
+use crate::api::validation::{validate_image_bytes, validate_image_upload};
 use crate::core::state::AppState;
 use crate::core::time::primitive_now_utc;
 use crate::db::types::SessionStatus;
@@ -554,6 +554,8 @@ impl TelegramBotRuntime {
         .map_err(|e| anyhow!("Invalid image: {e:?}"))?;
 
         let bytes = self.download_file_bytes(&file_id).await?;
+        validate_image_bytes(&mime_type, &bytes)
+            .map_err(|e| anyhow!("Invalid image content: {e:?}"))?;
         let max_bytes = self.state.settings().storage().max_upload_size_mb * 1024 * 1024;
         if bytes.len() as u64 > max_bytes {
             self.send_message(

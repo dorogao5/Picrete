@@ -25,8 +25,8 @@
 В репозитории 3 исполняемых процесса:
 
 - `picrete-rust` — HTTP API.
-- `picrete-worker` — OCR/LLM/background maintenance.
-- `picrete-telegram-bot` — Telegram polling bot.
+- `worker` — OCR/LLM/background maintenance.
+- `telegram_bot` — Telegram polling bot.
 
 Все 3 используют общий `Settings::load()` и общую валидацию конфига.
 
@@ -147,3 +147,29 @@ docker compose -f docker-compose.prod.yml up -d --build
 - `auto_submit_total`
 - `expired_sessions_closed_total`
 - `ocr_jobs_total`, `llm_precheck_jobs_total`
+
+
+## Согласованный выпуск
+
+Релиз собирается из чистых коммитов `main` Picrete, Studio-Picrete и Front-Picrete.
+SHA всех трёх репозиториев записываются в общий `release-manifest.json` рядом с
+каталогами выпуска на сервере. Собранные файлы не редактируются вручную.
+API публикуют свой SHA через `/version`, frontend — через `/build-info.json`.
+Изменения контракта Studio → Picrete проверяются вместе с обоими интерфейсами.
+
+Перед публикацией проходят проверки `.github/workflows/verify.yml`.
+Секреты, пользовательские данные, каталоги банка и артефакты проверки не коммитятся.
+
+Production Compose использует `RELEASE_SHA` как тег образа; образ содержит API,
+worker и Telegram-бот из одной сборки. Компиляция Linux: Rust 1.88, `BUILD_REVISION`
+равен SHA, `cargo build --release --locked --bins`; затем `docker compose -f
+docker-compose.prod.yml build` с тем же `RELEASE_SHA`.
+Бот работает на solid; профиль `external-bot` на основной ВМ не запускается.
+При обновлении бота переносится тот же образ и соответствующий набор миграций.
+PostgreSQL, Redis и API слушают loopback; доступ к API идёт через nginx.
+
+Проверки оценивания принимают критерии с `max_score` и старый формат `weight`
+(доля от максимума). Пустая рубрика требует проверки преподавателем. Числа,
+извлечённые из общего OCR, используются как подсказка; автоматический предел
+балла применяется только к однозначному ответу одной задачи с явным правилом
+преподавателя `max_score_on_mismatch`.

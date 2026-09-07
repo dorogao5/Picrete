@@ -92,7 +92,7 @@ pub(super) fn exam_payload() -> serde_json::Value {
                 "description": "Auto-save task",
                 "order_index": 1,
                 "max_score": 10.0,
-                "rubric": {"criteria": []},
+                "rubric": {"criteria": [{"criterion_name": "Correct result", "max_score": 10.0}]},
                 "difficulty": "easy",
                 "taxonomy_tags": [],
                 "formulas": [],

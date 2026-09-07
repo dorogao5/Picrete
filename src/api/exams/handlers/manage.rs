@@ -43,7 +43,12 @@ pub(in crate::api::exams) async fn get_exam(
 
     let task_types = helpers::fetch_task_types(state.db(), &course_id, &exam.id).await?;
 
-    Ok(Json(helpers::exam_to_response(exam, task_types)))
+    let mut response = helpers::exam_to_response(exam, task_types);
+    if !is_teacher {
+        helpers::redact_exam_for_student(&mut response);
+    }
+
+    Ok(Json(response))
 }
 
 pub(in crate::api::exams) async fn update_exam(
@@ -190,6 +195,29 @@ pub(in crate::api::exams) async fn publish_exam(
 
     if task_count == 0 {
         return Err(ApiError::BadRequest("Exam must have at least one task type".to_string()));
+    }
+
+    let task_types = repositories::task_types::list_by_exam(state.db(), &course_id, &exam_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to validate task types"))?;
+    let task_type_ids = task_types.iter().map(|task_type| task_type.id.clone()).collect::<Vec<_>>();
+    let variants = repositories::task_types::list_variants_by_task_type_ids(
+        state.db(),
+        &course_id,
+        &task_type_ids,
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Failed to validate task variants"))?;
+    let content_issues = crate::services::content_integrity::validate_exam_content(
+        &course_id,
+        &task_types,
+        &variants,
+    );
+    if !content_issues.is_empty() {
+        return Err(ApiError::UnprocessableEntity(format!(
+            "Exam content failed publication checks: {}",
+            crate::services::content_integrity::format_issues(&content_issues)
+        )));
     }
 
     let now = primitive_now_utc();

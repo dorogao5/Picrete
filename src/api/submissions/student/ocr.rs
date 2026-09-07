@@ -355,8 +355,11 @@ pub(in crate::api::submissions) async fn finalize_ocr_review(
     let scores =
         crate::api::submissions::helpers::fetch_scores(state.db(), &course_id, &submission.id)
             .await?;
-    let response =
+    let mut response =
         crate::api::submissions::helpers::to_submission_response(submission, images, scores);
+    if !super::feedback_is_released(&session, &exam) {
+        super::redact_submission_feedback(&mut response);
+    }
 
     Ok(Json(crate::api::submissions::helpers::with_next_step(response, SubmissionNextStep::Result)))
 }

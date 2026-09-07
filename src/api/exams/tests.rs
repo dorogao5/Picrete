@@ -29,7 +29,7 @@ fn exam_payload() -> serde_json::Value {
                 "description": "Solve the equation",
                 "order_index": 1,
                 "max_score": 10.0,
-                "rubric": {"criteria": []},
+                "rubric": {"criteria": [{"criterion_name": "Correct result", "max_score": 10.0}]},
                 "difficulty": "easy",
                 "taxonomy_tags": [],
                 "formulas": [],
@@ -121,6 +121,107 @@ async fn teacher_can_create_publish_and_list_exam() {
 }
 
 #[tokio::test]
+async fn exam_reference_authorization_matrix_redacts_student_payloads() {
+    let ctx = test_support::setup_test_context().await;
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "exam_secret_teacher", "Teacher", "pass-1234")
+            .await;
+    let student =
+        test_support::insert_user(ctx.state.db(), "exam_secret_student", "Student", "pass-1234")
+            .await;
+    let outsider =
+        test_support::insert_user(ctx.state.db(), "exam_secret_outsider", "Outsider", "pass-1234")
+            .await;
+    let course = test_support::create_course_with_teacher(
+        ctx.state.db(),
+        "exam-secret-course",
+        "Exam secret course",
+        &teacher.id,
+    )
+    .await;
+    test_support::add_course_role(ctx.state.db(), &course.id, &student.id, CourseRole::Student)
+        .await;
+
+    let teacher_token = test_support::bearer_token(&teacher.id, ctx.state.settings());
+    let student_token = test_support::bearer_token(&student.id, ctx.state.settings());
+    let outsider_token = test_support::bearer_token(&outsider.id, ctx.state.settings());
+    let mut payload = exam_payload();
+    payload["settings"] = json!({"private_grading_note": "do not disclose"});
+    payload["task_types"][0]["rubric"] = json!({"criteria": [{
+        "criterion_name": "Exact answer",
+        "max_score": 10.0
+    }]});
+    payload["task_types"][0]["validation_rules"] = json!({
+        "numeric_answer": {
+            "value": 780.0,
+            "unit": "K",
+            "relative_tolerance": 0.05,
+            "max_score_on_mismatch": 0.0
+        }
+    });
+    payload["task_types"][0]["variants"][0]["reference_solution"] = json!("teacher-only solution");
+    payload["task_types"][0]["variants"][0]["reference_answer"] = json!("780 K");
+
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/exams", course.id),
+            Some(&teacher_token),
+            Some(payload),
+        ))
+        .await
+        .expect("create exam");
+    let created = test_support::read_json(response).await;
+    let exam_id = created["id"].as_str().expect("exam id");
+    let publish = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/exams/{exam_id}/publish", course.id),
+            Some(&teacher_token),
+            None,
+        ))
+        .await
+        .expect("publish exam");
+    assert_eq!(publish.status(), StatusCode::OK);
+
+    let uri = format!("/api/v1/courses/{}/exams/{exam_id}", course.id);
+    let teacher_response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(Method::GET, &uri, Some(&teacher_token), None))
+        .await
+        .expect("teacher exam");
+    assert_eq!(teacher_response.status(), StatusCode::OK);
+    let teacher_body = test_support::read_json(teacher_response).await;
+    assert_eq!(teacher_body["task_types"][0]["variants"][0]["reference_answer"], "780 K");
+
+    let student_response = ctx
+        .app
+        .clone()
+        .oneshot(test_support::json_request(Method::GET, &uri, Some(&student_token), None))
+        .await
+        .expect("student exam");
+    assert_eq!(student_response.status(), StatusCode::OK);
+    let student_body = test_support::read_json(student_response).await;
+    assert!(student_body["task_types"][0]["variants"][0]["reference_solution"].is_null());
+    assert!(student_body["task_types"][0]["variants"][0]["reference_answer"].is_null());
+    assert_eq!(student_body["task_types"][0]["rubric"], json!({}));
+    assert_eq!(student_body["task_types"][0]["validation_rules"], json!({}));
+    assert_eq!(student_body["settings"], json!({}));
+
+    let outsider_response = ctx
+        .app
+        .oneshot(test_support::json_request(Method::GET, &uri, Some(&outsider_token), None))
+        .await
+        .expect("outsider exam");
+    assert_eq!(outsider_response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn teacher_cannot_access_other_teachers_exam_management_endpoints() {
     let ctx = test_support::setup_test_context().await;
 
@@ -177,7 +278,7 @@ async fn teacher_cannot_access_other_teachers_exam_management_endpoints() {
         "description": "Unauthorized add",
         "order_index": 2,
         "max_score": 5.0,
-        "rubric": {"criteria": []},
+        "rubric": {"criteria": [{"criterion_name": "Correct result", "max_score": 5.0}]},
         "difficulty": "easy",
         "taxonomy_tags": [],
         "formulas": [],

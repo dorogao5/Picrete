@@ -1,12 +1,16 @@
 services:
   api:
+    image: picrete-runtime:${RELEASE_SHA:-local}
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        BUILD_REVISION: ${RELEASE_SHA:-unknown}
     network_mode: host
     volumes:
       - ./tasks:/app/tasks:ro
     environment:
+      - PICRETE_HOST=127.0.0.1
       - COURSE_CONTEXT_MODE=route
       - FIRST_SUPERUSER_USERNAME=${FIRST_SUPERUSER_USERNAME}
       - FIRST_SUPERUSER_PASSWORD=${FIRST_SUPERUSER_PASSWORD}
@@ -75,14 +79,19 @@ services:
         max-file: "3"
 
   worker:
+    image: picrete-runtime:${RELEASE_SHA:-local}
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        BUILD_REVISION: ${RELEASE_SHA:-unknown}
     network_mode: host
     command: ["picrete-worker"]
     volumes:
       - ./tasks:/app/tasks:ro
+      - ./migrations:/app/migrations:ro
     environment:
+      - PICRETE_HOST=127.0.0.1
       - COURSE_CONTEXT_MODE=route
       - POSTGRES_SERVER=localhost
       - POSTGRES_PORT=5432
@@ -137,14 +146,20 @@ services:
         max-file: "3"
 
   telegram-bot:
+    profiles: ["external-bot"]
+    image: picrete-runtime:${RELEASE_SHA:-local}
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        BUILD_REVISION: ${RELEASE_SHA:-unknown}
     network_mode: host
     command: ["picrete-telegram-bot"]
     volumes:
       - ./tasks:/app/tasks:ro
+      - ./migrations:/app/migrations:ro
     environment:
+      - PICRETE_HOST=127.0.0.1
       - COURSE_CONTEXT_MODE=route
       - POSTGRES_SERVER=localhost
       - POSTGRES_PORT=5432
@@ -190,7 +205,7 @@ services:
       - DATALAB_MAX_SUBMIT_RETRIES=${DATALAB_MAX_SUBMIT_RETRIES}
       - BACKEND_CORS_ORIGINS=${BACKEND_CORS_ORIGINS}
  
-    restart: always
+    restart: "no"
     deploy:
       resources:
         limits:

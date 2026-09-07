@@ -4,7 +4,7 @@ use sqlx::PgPool;
 
 use crate::core::state::AppState;
 use crate::core::time::primitive_now_utc as now_primitive;
-use crate::db::models::{Exam, ExamSession, Submission, SubmissionImage, TaskVariant};
+use crate::db::models::{Exam, ExamSession, Submission, SubmissionImage, TaskType, TaskVariant};
 use crate::db::types::{OcrOverallStatus, SubmissionStatus};
 use crate::repositories;
 use crate::services::ai_grading::{AiGradingService, LlmPrecheckRequest};
@@ -304,8 +304,14 @@ pub(crate) async fn run_llm_precheck(
         })
         .collect::<Vec<_>>();
 
-    let (task_description, reference_solution, rubric, total_max_score) =
+    let (task_description, reference_solution, rubric, total_max_score, grading_rules) =
         build_task_prompt(state.db(), &exam, &session).await?;
+
+    let deterministic = crate::services::grading_constraints::evaluate_numeric_constraints(
+        &grading_rules,
+        &ocr_pages.join("\n\n"),
+        total_max_score,
+    );
 
     let request = LlmPrecheckRequest {
         submission_id: Some(submission.id.clone()),
@@ -316,7 +322,7 @@ pub(crate) async fn run_llm_precheck(
         reference_solution,
         rubric,
         max_score: total_max_score,
-        chemistry_rules: None,
+        chemistry_rules: Some(grading_rules),
     };
 
     let started_at = submission.ai_request_started_at.unwrap_or_else(now_primitive);
@@ -363,7 +369,18 @@ pub(crate) async fn run_llm_precheck(
         map.remove("_metadata");
     }
 
-    let total_score = result.get("total_score").and_then(Value::as_f64);
+    let model_total_score = result.get("total_score").and_then(Value::as_f64);
+    let total_score = crate::services::grading_constraints::normalize_model_score(
+        model_total_score,
+        total_max_score,
+        deterministic.score_cap,
+    );
+    result["total_score"] = total_score.map_or(Value::Null, serde_json::Value::from);
+    result["deterministic_checks"] = serde_json::json!({
+        "checks": deterministic.checks,
+        "model_total_score": model_total_score,
+        "applied_score_cap": deterministic.score_cap,
+    });
     let feedback = result.get("feedback").and_then(Value::as_str).map(|value| value.to_string());
     let completed_at = now_primitive();
     let duration = (completed_at.assume_utc() - started_at.assume_utc()).as_seconds_f64();
@@ -438,7 +455,7 @@ async fn build_task_prompt(
     pool: &PgPool,
     exam: &Exam,
     session: &ExamSession,
-) -> Result<(String, String, Value, f64)> {
+) -> Result<(String, String, Value, f64, Value)> {
     let task_types = repositories::task_types::list_by_exam(pool, &exam.course_id, &exam.id)
         .await
         .context("Failed to fetch task types")?;
@@ -464,6 +481,7 @@ async fn build_task_prompt(
     let mut descriptions = Vec::new();
     let mut reference_solutions = Vec::new();
     let mut rubric_items = Vec::new();
+    let mut numeric_answers = Vec::new();
     let mut total_max_score = 0.0;
 
     for task_type in task_types {
@@ -486,12 +504,27 @@ async fn build_task_prompt(
                         reference
                     ));
                 }
+                if let Some(reference) = variant.reference_answer.as_deref() {
+                    reference_solutions.push(format!(
+                        "Эталонный финальный ответ для задачи {}:\n{}",
+                        task_type.order_index + 1,
+                        reference
+                    ));
+                }
 
-                rubric_items.push(json!({
-                    "task_type": task_type.title,
-                    "max_score": task_type.max_score,
-                    "criteria": "Оценивать по критериям в системном промпте"
-                }));
+                if let Some(constraint) =
+                    crate::services::grading_constraints::build_numeric_answer_constraint(
+                        &task_type.id,
+                        task_type.max_score,
+                        &task_type.validation_rules.0,
+                        variant.reference_answer.as_deref(),
+                        variant.answer_tolerance,
+                    )
+                {
+                    numeric_answers.push(constraint);
+                }
+
+                rubric_items.push(build_task_rubric(&task_type)?);
 
                 total_max_score += task_type.max_score;
             }
@@ -506,6 +539,8 @@ async fn build_task_prompt(
         "criteria": rubric_items,
         "total_max_score": total_max_score,
     });
+    let grading_rules =
+        json!({"task_count": rubric_items.len(), "numeric_answers": numeric_answers});
 
     let task_description = descriptions.join("\n\n");
     let reference_solution = if reference_solutions.is_empty() {
@@ -514,7 +549,52 @@ async fn build_task_prompt(
         reference_solutions.join("\n\n")
     };
 
-    Ok((task_description, reference_solution, rubric, total_max_score))
+    Ok((task_description, reference_solution, rubric, total_max_score, grading_rules))
+}
+
+fn build_task_rubric(task_type: &TaskType) -> Result<Value> {
+    let rubric = crate::services::content_integrity::normalize_rubric(
+        &task_type.rubric.0,
+        task_type.max_score,
+    );
+    let criteria = rubric
+        .get("criteria")
+        .and_then(Value::as_array)
+        .filter(|criteria| !criteria.is_empty())
+        .with_context(|| format!("Task type {} has no grading criteria", task_type.id))?;
+    let mut total = 0.0;
+    for (index, criterion) in criteria.iter().enumerate() {
+        let has_name = ["criterion_name", "name", "title"]
+            .iter()
+            .filter_map(|key| criterion.get(*key).and_then(Value::as_str))
+            .any(|name| !name.trim().is_empty());
+        if !has_name {
+            anyhow::bail!("Task type {} rubric criterion {index} has no name", task_type.id);
+        }
+        let score = criterion
+            .get("max_score")
+            .or_else(|| criterion.get("maxScore"))
+            .and_then(Value::as_f64)
+            .filter(|score| score.is_finite() && *score >= 0.0)
+            .with_context(|| {
+                format!("Task type {} rubric criterion {index} has invalid max_score", task_type.id)
+            })?;
+        total += score;
+    }
+    if !task_type.max_score.is_finite() || (total - task_type.max_score).abs() > 0.01 {
+        anyhow::bail!(
+            "Task type {} rubric total ({total}) does not equal max_score ({})",
+            task_type.id,
+            task_type.max_score
+        );
+    }
+
+    Ok(json!({
+        "task_type_id": task_type.id,
+        "task_type": task_type.title,
+        "max_score": task_type.max_score,
+        "criteria": criteria,
+    }))
 }
 
 async fn fetch_submission(
@@ -525,6 +605,54 @@ async fn fetch_submission(
     repositories::submissions::find_by_id(pool, course_id, submission_id)
         .await
         .context("Failed to fetch submission")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_task_rubric;
+    use crate::core::time::primitive_now_utc;
+    use crate::db::models::TaskType;
+    use crate::db::types::DifficultyLevel;
+    use serde_json::json;
+    use sqlx::types::Json;
+
+    fn task_type(rubric: serde_json::Value) -> TaskType {
+        let now = primitive_now_utc();
+        TaskType {
+            id: "rubric-task".to_string(),
+            course_id: "course".to_string(),
+            exam_id: "exam".to_string(),
+            title: "Stoichiometry".to_string(),
+            description: "Calculate".to_string(),
+            order_index: 0,
+            max_score: 5.0,
+            rubric: Json(rubric),
+            difficulty: DifficultyLevel::Medium,
+            taxonomy_tags: Json(vec![]),
+            formulas: Json(vec![]),
+            units: Json(vec![]),
+            validation_rules: Json(json!({})),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn grading_prompt_uses_actual_rubric_criteria() {
+        let rubric = build_task_rubric(&task_type(json!({"criteria": [
+            {"criterion_name": "Method", "max_score": 2.0},
+            {"criterion_name": "Answer", "max_score": 3.0}
+        ]})))
+        .expect("valid rubric");
+        assert_eq!(rubric["criteria"][0]["criterion_name"], "Method");
+        assert_eq!(rubric["criteria"][1]["max_score"], 3.0);
+    }
+
+    #[test]
+    fn grading_prompt_rejects_legacy_empty_rubric() {
+        let error = build_task_rubric(&task_type(json!({"criteria": []}))).unwrap_err();
+        assert!(error.to_string().contains("no grading criteria"));
+    }
 }
 
 async fn fetch_session(

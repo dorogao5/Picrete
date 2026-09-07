@@ -1,5 +1,8 @@
 mod handlers;
 
+#[cfg(test)]
+mod tests;
+
 use axum::{routing::get, routing::post, Router};
 
 use crate::core::state::AppState;

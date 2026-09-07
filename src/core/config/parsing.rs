@@ -1,5 +1,7 @@
 use std::env;
 
+use axum::http::Uri;
+
 use super::types::{ConfigError, CourseContextMode, Environment};
 
 const DEFAULT_CORS_ORIGINS: &[&str] = &[
@@ -47,7 +49,7 @@ pub(super) fn parse_cors_origins(value: Option<String>) -> Result<Vec<String>, C
         if parsed.is_empty() {
             return Ok(default_cors_origins());
         }
-        return Ok(parsed);
+        return validate_cors_origins(parsed, &raw);
     }
 
     let items: Vec<String> = raw
@@ -60,7 +62,26 @@ pub(super) fn parse_cors_origins(value: Option<String>) -> Result<Vec<String>, C
         return Ok(default_cors_origins());
     }
 
-    Ok(items)
+    validate_cors_origins(items, &raw)
+}
+
+fn validate_cors_origins(origins: Vec<String>, raw: &str) -> Result<Vec<String>, ConfigError> {
+    for origin in &origins {
+        let uri = origin.parse::<Uri>().map_err(|_| ConfigError::InvalidCors(raw.to_string()))?;
+        let scheme = uri.scheme_str();
+        let authority = uri.authority().map(|value| value.as_str());
+        let has_forbidden_suffix =
+            uri.path() != "" && uri.path() != "/" || uri.query().is_some() || origin.ends_with('/');
+        if !matches!(scheme, Some("http" | "https"))
+            || authority.is_none()
+            || authority.is_some_and(|value| value.contains('@'))
+            || origin == "*"
+            || has_forbidden_suffix
+        {
+            return Err(ConfigError::InvalidCors(raw.to_string()));
+        }
+    }
+    Ok(origins)
 }
 
 pub(super) fn parse_string_list(value: Option<String>, defaults: &[&str]) -> Vec<String> {
@@ -124,6 +145,13 @@ mod tests {
     fn parse_cors_origins_defaults_on_empty() {
         let parsed = parse_cors_origins(Some(" ".to_string())).expect("cors empty");
         assert_eq!(parsed, default_cors_origins());
+    }
+
+    #[test]
+    fn parse_cors_origins_rejects_wildcards_paths_and_non_http_schemes() {
+        for value in ["*", "https://example.com/path", "file://example.com"] {
+            assert!(parse_cors_origins(Some(value.to_string())).is_err(), "accepted {value}");
+        }
     }
 
     #[test]

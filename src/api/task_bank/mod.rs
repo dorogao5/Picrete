@@ -10,3 +10,6 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/items", get(handlers::list_items))
         .route("/items/:item_id/images/:image_id/view", get(handlers::view_item_image))
 }
+
+#[cfg(test)]
+mod tests;

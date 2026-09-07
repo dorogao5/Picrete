@@ -3,6 +3,7 @@ use uuid::Uuid;
 use crate::api::errors::ApiError;
 use crate::core::time::primitive_now_utc;
 use crate::db::models::Exam;
+use crate::db::types::ExamStatus;
 use crate::repositories;
 use crate::schemas::exam::{
     format_primitive, ExamResponse, TaskTypeCreate, TaskTypeResponse, TaskVariantCreate,
@@ -198,5 +199,41 @@ pub(super) fn exam_to_response(exam: Exam, task_types: Vec<TaskTypeResponse>) ->
         updated_at: format_primitive(exam.updated_at),
         published_at: exam.published_at.map(format_primitive),
         task_types,
+    }
+}
+
+pub(super) fn redact_exam_for_student(response: &mut ExamResponse) {
+    if !student_answers_released(response) {
+        for task_type in &mut response.task_types {
+            task_type.rubric = serde_json::json!({});
+            task_type.validation_rules = serde_json::json!({});
+            for variant in &mut task_type.variants {
+                variant.reference_solution = None;
+                variant.reference_answer = None;
+                variant.answer_tolerance = 0.0;
+            }
+        }
+    }
+
+    let answer_release = response
+        .settings
+        .get("answer_release")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    response.settings = match answer_release {
+        Some(value) => serde_json::json!({"answer_release": value}),
+        None => serde_json::json!({}),
+    };
+}
+
+fn student_answers_released(response: &ExamResponse) -> bool {
+    match response.settings.get("answer_release").and_then(serde_json::Value::as_str) {
+        Some("after_exam_end") => time::OffsetDateTime::parse(
+            &response.end_time,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .is_ok_and(|end| time::OffsetDateTime::now_utc() >= end),
+        Some("after_completion") => matches!(response.status, ExamStatus::Completed),
+        _ => false,
     }
 }

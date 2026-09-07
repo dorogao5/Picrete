@@ -1,0 +1,11 @@
+*
+!Dockerfile
+!target/
+target/*
+!target/release/
+target/release/*
+!target/release/picrete-rust
+!target/release/worker
+!target/release/telegram_bot
+!migrations/
+!migrations/**

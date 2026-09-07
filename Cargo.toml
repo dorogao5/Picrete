@@ -26,9 +26,9 @@ redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 metrics = "0.22"
 metrics-exporter-prometheus = "0.14"
-aws-config = "1.8.12"
-aws-credential-types = "1.2.11"
-aws-sdk-s3 = "1.119.0"
+aws-config = { version = "=1.8.12", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-credential-types = "=1.2.11"
+aws-sdk-s3 = { version = "=1.122.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 hex = "0.4"
 sha2 = "0.10"
 validator = { version = "0.20.0", features = ["derive"] }

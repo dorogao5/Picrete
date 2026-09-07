@@ -152,6 +152,23 @@ pub(crate) async fn fetch_one_by_id(
     .await
 }
 
+pub(crate) async fn list_by_ids(
+    pool: &PgPool,
+    course_id: &str,
+    ids: &[String],
+) -> Result<Vec<Exam>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_as::<_, Exam>(&format!(
+        "SELECT {COLUMNS} FROM exams WHERE course_id = $1 AND id = ANY($2)"
+    ))
+    .bind(course_id)
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+}
+
 pub(crate) async fn list_summaries(
     pool: &PgPool,
     params: ListExamSummariesParams,
@@ -355,26 +372,6 @@ pub(crate) async fn mark_completed(
     .execute(pool)
     .await?;
     Ok(())
-}
-
-pub(crate) async fn list_titles_by_ids(
-    pool: &PgPool,
-    course_id: &str,
-    exam_ids: &[String],
-) -> Result<Vec<(String, String, WorkKind)>, sqlx::Error> {
-    if exam_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    sqlx::query_as::<_, (String, String, WorkKind)>(
-        "SELECT id, title, kind
-         FROM exams
-         WHERE course_id = $1 AND id = ANY($2)",
-    )
-    .bind(course_id)
-    .bind(exam_ids)
-    .fetch_all(pool)
-    .await
 }
 
 pub(crate) async fn max_score_for_exam(
