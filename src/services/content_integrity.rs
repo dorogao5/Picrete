@@ -349,6 +349,16 @@ fn validate_units(units: &[Value], location: &str, issues: &mut Vec<ContentIssue
 
 pub(crate) fn normalize_rubric(rubric: &Value, task_max_score: f64) -> Value {
     let mut result = rubric.clone();
+    // Older bank snapshots contain source metadata only. They use the same
+    // single answer criterion as newly imported bank tasks, without rewriting
+    // historical rows or inventing criteria for teacher-authored tasks.
+    if result.get("source").and_then(Value::as_str) == Some("task_bank")
+        && result.get("criteria").and_then(Value::as_array).is_none_or(Vec::is_empty)
+    {
+        result["criteria"] = serde_json::json!([{
+            "criterion_name": "Correct answer", "max_score": task_max_score,
+        }]);
+    }
     if let Some(criteria) = result.get_mut("criteria").and_then(Value::as_array_mut) {
         // The original exam editor stores proportions; preserve the teacher's
         // weighting while presenting explicit points to the grader.
@@ -619,6 +629,15 @@ mod tests {
     fn unique_reference_values_with_opposite_signs_are_rejected() {
         assert!(reference_sign_conflicts(Some("Получаем -12 kJ"), Some("12 kJ")));
         assert!(!reference_sign_conflicts(Some("Промежуточно 6 kJ, итог 12 kJ"), Some("-12 kJ")));
+    }
+
+    #[test]
+    fn legacy_bank_snapshot_uses_the_same_rubric_as_new_bank_tasks() {
+        let rubric = super::normalize_rubric(&json!({"source": "task_bank", "number": "1.1"}), 1.0);
+        assert_eq!(rubric["criteria"][0]["max_score"], 1.0);
+        let mut issues = Vec::new();
+        validate_rubric(&rubric, 1.0, "legacy-bank", &mut issues);
+        assert!(issues.is_empty());
     }
 
     #[test]
