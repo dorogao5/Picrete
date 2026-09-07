@@ -113,9 +113,10 @@ mod tests {
         assert!(!verify_password("wrong-password", &hash).unwrap());
     }
 
-    #[test]
-    fn jwt_encode_decode_roundtrip() {
-        std::env::set_var("SECRET_KEY", "test-secret");
+    #[tokio::test]
+    async fn jwt_encode_decode_roundtrip() {
+        let _guard = crate::test_support::env_lock().await;
+        crate::test_support::set_test_env();
         let settings = Settings::load().expect("settings");
 
         let token =
