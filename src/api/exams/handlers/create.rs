@@ -240,6 +240,23 @@ pub(in crate::api::exams) async fn add_task_types_from_bank(
         )));
     }
 
+    let published = repositories::course_ai_assistants::find(state.db(), &course_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Failed to load course grading settings"))?
+        .filter(|p| p.enabled && crate::services::ai_grading::grading_enabled(&p.snapshot));
+    let (bank_criteria, bank_max_score) = match published.as_ref() {
+        Some(p) => {
+            if by_id.values().any(|i| i.solution.as_deref().is_none_or(|s| s.trim().is_empty())) {
+                return Err(ApiError::UnprocessableEntity(
+                    "Для этого курса выбирайте задачи с полным эталонным решением".into(),
+                ));
+            }
+            crate::services::ai_grading::bank_rubric(&p.snapshot)
+                .map_err(|e| ApiError::UnprocessableEntity(e.to_string()))?
+        }
+        None => (vec![serde_json::json!({"criterion_name":"Correct answer","max_score":1.0})], 1.0),
+    };
+
     let existing_task_types =
         repositories::task_types::list_by_exam(state.db(), &course_id, &exam_id)
             .await
@@ -278,16 +295,14 @@ pub(in crate::api::exams) async fn add_task_types_from_bank(
                 title: &format!("Задача {}", item_number),
                 description: &item_text,
                 order_index: next_order_index,
-                max_score: 1.0,
+                max_score: bank_max_score,
                 rubric: serde_json::json!({
                     "snapshot": true,
                     "source": "task_bank",
                     "source_code": source_code.clone(),
                     "number": item_number.clone(),
-                    "criteria": [{
-                        "criterion_name": "Correct answer",
-                        "max_score": 1.0,
-                    }],
+                    "assistant_snapshot_version": published.as_ref().map(|p| &p.snapshot_version),
+                    "criteria": bank_criteria.clone(),
                 }),
                 difficulty: match item.difficulty.as_deref() {
                     Some("легкая") => crate::db::types::DifficultyLevel::Easy,

@@ -34,6 +34,7 @@ pub(crate) fn internal_router() -> Router<AppState> {
     Router::new()
         .route("/course-assistants/:course_id", put(publish_snapshot))
         .route("/course-options", get(course_options))
+        .merge(super::studio_grading::router())
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -48,6 +49,8 @@ struct PublishSnapshot {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct PublishedAssistant {
+    #[serde(default)]
+    grading_enabled: bool,
     id: String,
     name: String,
     discipline: String,
@@ -145,6 +148,13 @@ async fn publish_snapshot(
         .ok_or_else(|| ApiError::NotFound("Курс Picrete не найден".to_string()))?;
     let snapshot = serde_json::to_value(&payload)
         .map_err(|e| ApiError::internal(e, "Failed to serialize assistant snapshot"))?;
+    if crate::services::ai_grading::grading_enabled(&snapshot) {
+        crate::services::ai_grading::validate_grading_snapshot(
+            &snapshot,
+            &state.settings().ai().assistant_model,
+        )
+        .map_err(|e| ApiError::UnprocessableEntity(e.to_string()))?;
+    }
     if snapshot.to_string().len() > 1_600_000 {
         return Err(ApiError::UnprocessableEntity("Снимок ассистента слишком большой".to_string()));
     }
@@ -165,7 +175,7 @@ async fn publish_snapshot(
     Ok(Json(json!({"ok": true, "synced_at": format_primitive(stored.synced_at)})))
 }
 
-fn authenticate_studio(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+pub(crate) fn authenticate_studio(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
     let expected = state.settings().studio_integration().token.as_bytes();
     let provided = headers
         .get(header::AUTHORIZATION)

@@ -155,7 +155,7 @@ fn build_system_prompt(prompt: &str, profile: &str, reference: &str) -> String {
     )
 }
 
-fn build_assistant_profile(assistant: &Value) -> String {
+pub(crate) fn build_assistant_profile(assistant: &Value) -> String {
     let text = |key: &str| {
         assistant.get(key).and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty())
     };
@@ -233,7 +233,7 @@ fn build_payload(model: &str, messages: Vec<Value>) -> Value {
     payload
 }
 
-fn select_reference_sheets(snapshot: &Value, query: &str, max_chars: usize) -> String {
+pub(crate) fn select_reference_sheets(snapshot: &Value, query: &str, max_chars: usize) -> String {
     let Some(sheets) = snapshot.get("reference_sheets").and_then(Value::as_array) else {
         return String::new();
     };

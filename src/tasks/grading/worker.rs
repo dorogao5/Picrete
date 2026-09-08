@@ -313,7 +313,17 @@ pub(crate) async fn run_llm_precheck(
         total_max_score,
     );
 
+    let published = repositories::course_ai_assistants::find(state.db(), course_id).await?;
+    let snapshot = published
+        .filter(|p| p.enabled && crate::services::ai_grading::grading_enabled(&p.snapshot))
+        .map(|p| p.snapshot);
+    let course_ai = snapshot
+        .as_ref()
+        .map(|s| AiGradingService::for_snapshot(state.settings(), s))
+        .transpose()?;
+    let ai = course_ai.as_ref().unwrap_or(ai);
     let request = LlmPrecheckRequest {
+        snapshot,
         submission_id: Some(submission.id.clone()),
         ocr_markdown_pages: ocr_pages,
         ocr_report_issues: issue_payload,
@@ -363,10 +373,6 @@ pub(crate) async fn run_llm_precheck(
         .context("Failed to mark LLM unreadable failure")?;
         metrics::counter!("llm_precheck_jobs_total", "status" => "unreadable").increment(1);
         return Ok(());
-    }
-
-    if let Some(map) = result.as_object_mut() {
-        map.remove("_metadata");
     }
 
     let model_total_score = result.get("total_score").and_then(Value::as_f64);
