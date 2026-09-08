@@ -2,6 +2,7 @@ use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Settings {
+    pub(crate) itmo: crate::core::config::itmo::ItmoConfig,
     pub(super) server: ServerSettings,
     pub(super) runtime: RuntimeSettings,
     pub(super) api: ApiSettings,

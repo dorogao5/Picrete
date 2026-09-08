@@ -34,6 +34,7 @@ struct OAuth2PasswordForm {
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
+        .nest("/itmo", super::itmo::router())
         .route("/signup", post(signup))
         .route("/login", post(login))
         .route("/token", post(token))
@@ -262,7 +263,7 @@ async fn fetch_user_by_username(state: &AppState, username: &str) -> Result<User
         .ok_or(ApiError::Unauthorized("Incorrect username or password"))
 }
 
-async fn load_memberships(
+pub(super) async fn load_memberships(
     state: &AppState,
     user: &User,
 ) -> Result<Vec<MembershipResponse>, ApiError> {

@@ -13,3 +13,5 @@ pub(crate) mod task_bank;
 pub(crate) mod trainer;
 pub(crate) mod users;
 pub(crate) mod validation;
+
+pub(crate) mod itmo;

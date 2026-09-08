@@ -41,6 +41,9 @@ pub(crate) fn set_test_env() {
     dotenvy::dotenv().ok();
 
     std::env::set_var("PICRETE_ENV", "test");
+    std::env::remove_var("ITMO_ID_ENABLED");
+    std::env::remove_var("ITMO_ID_ALLOWED_GROUPS");
+    std::env::remove_var("ITMO_ID_ENROLLMENT_RULES");
     std::env::set_var("PICRETE_STRICT_CONFIG", "0");
     std::env::set_var("COURSE_CONTEXT_MODE", "route");
     std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);

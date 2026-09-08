@@ -26,8 +26,8 @@ impl Settings {
         let version = env_or_default("VERSION", env!("CARGO_PKG_VERSION"));
         let api_v1_str = env_or_default("API_V1_STR", "/api/v1");
         let terms_version = env_or_default("TERMS_VERSION", "2025-12-09");
-        let privacy_version = env_or_default("PRIVACY_VERSION", "2025-12-09");
-        let pd_consent_version = env_or_default("PD_CONSENT_VERSION", "2025-12-09");
+        let privacy_version = env_or_default("PRIVACY_VERSION", "2026-09-08");
+        let pd_consent_version = env_or_default("PD_CONSENT_VERSION", "2026-09-08");
 
         let secret_key = match env_optional("SECRET_KEY") {
             Some(value) => value,
@@ -234,6 +234,7 @@ impl Settings {
                 poll_timeout_seconds: telegram_poll_timeout_seconds,
             },
             telemetry: TelemetrySettings { log_level, json, prometheus_enabled },
+            itmo: crate::core::config::itmo::ItmoConfig::load()?,
             studio_integration: StudioIntegrationSettings { token: studio_integration_token },
         };
 
