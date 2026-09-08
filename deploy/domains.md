@@ -1,11 +1,13 @@
 # Public domains
 
-`picrete.com` and `picrete.ru` serve the same Front and API release. `dev.picrete.com` and `dev.picrete.ru` serve the same Studio release. Each www hostname redirects to the apex in its own zone. Authentication is browser-origin scoped; signing in on .com does not automatically sign in on .ru.
+`https://picrete.com` is the canonical Picrete address. `https://dev.picrete.com` is the canonical Studio address. Use these domains in documentation, service registration, links and ITMO.ID configuration. The production ITMO.ID callback is `https://picrete.com/auth/itmo/callback`.
 
-The existing .com sites retain their certificates. Install `nginx-picrete.ru.conf` as `/etc/nginx/sites-enabled/picrete.ru` only after issuing the `picrete.ru` certificate with SANs `picrete.ru`, `www.picrete.ru`, `dev.picrete.ru`. HTTP ACME validation uses `/var/www/html`. The paths reference the existing production release symlinks and shared immutable assets.
+`picrete.ru` is a defensive fallback domain. Page requests on its apex and www host redirect permanently to `https://picrete.com`, preserving the path and query string. `dev.picrete.ru` redirects pages to `https://dev.picrete.com`. HTTPS API, health/version and immutable asset routes remain available for already-open .ru browser sessions. Do not initiate ITMO.ID login on .ru. Authentication storage belongs to each origin; visitors previously signed in on .ru sign in again on .com.
 
-Install `certbot-reload-nginx.sh` with mode 0755 as `/etc/letsencrypt/renewal-hooks/deploy/reload-nginx`. Keep certbot.timer enabled. Validate renewal with `certbot renew --cert-name picrete.ru --dry-run --run-deploy-hooks`.
+Keep the .ru DNS records and certificate active. Install `nginx-picrete.ru.conf` as `/etc/nginx/sites-enabled/picrete.ru`; the `picrete.ru` certificate must cover `picrete.ru`, `www.picrete.ru` and `dev.picrete.ru`. HTTP ACME validation uses `/var/www/html` and is exempt from redirects. The existing .com sites retain their certificates.
 
-Preserve the existing production CORS values and add `https://picrete.ru` and `https://www.picrete.ru` to Picrete BACKEND_CORS_ORIGINS; add `https://dev.picrete.ru` to STUDIO_CORS_ORIGINS. These are environment settings, not committed credentials. Apply using the existing Compose project names and SHA-tagged images.
+Install `certbot-reload-nginx.sh` with mode 0755 as `/etc/letsencrypt/renewal-hooks/deploy/reload-nginx`. Keep certbot.timer enabled. After certificate or renewal configuration changes, validate with `certbot renew --cert-name picrete.ru --dry-run --run-deploy-hooks`.
 
-When changing nginx application routes, keep both .com templates and the .ru mirrors aligned. Deployment is complete only after nginx -t, HTTPS/version/build-info checks on both zones, and renewal verification. DNS A/AAAA must match reachable interfaces; mail and smtp records do not create a mail service.
+Preserve production CORS entries for existing .ru sessions while the compatibility API routes are in use. Environment settings contain credentials and are not committed. Apply using the existing Compose project names and SHA-tagged images.
+
+Before reloading nginx, run `nginx -t`. Verify .com pages, API readiness, frontend assets and ITMO configuration, then verify .ru redirects with nested paths and query strings. Keep compatible API routes aligned with the .com templates. DNS A/AAAA must match reachable interfaces; mail and smtp records do not create a mail service.

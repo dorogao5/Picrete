@@ -49,8 +49,7 @@ impl ItmoConfig {
         if c.enabled
             && !matches!(
                 c.redirect_uri.as_str(),
-                "https://picrete.ru/auth/itmo/callback"
-                    | "https://picrete.com/auth/itmo/callback"
+                "https://picrete.com/auth/itmo/callback"
                     | "http://localhost:8080/auth/itmo/callback"
             )
         {

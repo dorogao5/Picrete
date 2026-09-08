@@ -42,7 +42,7 @@ services:
       - ITMO_ID_ENABLED=${ITMO_ID_ENABLED:-false}
       - ITMO_ID_CLIENT_ID=${ITMO_ID_CLIENT_ID:-}
       - ITMO_ID_CLIENT_SECRET=${ITMO_ID_CLIENT_SECRET:-}
-      - ITMO_ID_REDIRECT_URI=${ITMO_ID_REDIRECT_URI:-https://picrete.ru/auth/itmo/callback}
+      - ITMO_ID_REDIRECT_URI=${ITMO_ID_REDIRECT_URI:-https://picrete.com/auth/itmo/callback}
       - ITMO_ID_ALLOWED_GROUPS=${ITMO_ID_ALLOWED_GROUPS:-}
       - ITMO_ID_ENROLLMENT_RULES=${ITMO_ID_ENROLLMENT_RULES:-}
       - DATALAB_API_KEY=${DATALAB_API_KEY}
