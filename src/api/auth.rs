@@ -45,6 +45,11 @@ async fn signup(
     State(state): State<AppState>,
     Json(payload): Json<UserCreate>,
 ) -> Result<(StatusCode, Json<TokenResponse>), ApiError> {
+    if state.settings().itmo.enabled {
+        return Err(ApiError::BadRequest(
+            "Для входа используйте ITMO.ID. Отдельная регистрация не требуется".into(),
+        ));
+    }
     validate_username(&payload.username)?;
     validate_password_len(&payload.password)?;
 

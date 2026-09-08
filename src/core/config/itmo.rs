@@ -18,6 +18,7 @@ impl ItmoConfig {
             enrollment_rules: vec![EnrollmentRule {
                 course_slug: "infochem-29".into(),
                 study_year: 2,
+                teacher_isu: vec![],
                 groups: var("ITMO_ID_ALLOWED_GROUPS")
                     .split(',')
                     .map(str::trim)
@@ -37,6 +38,7 @@ impl ItmoConfig {
                 r.course_slug.trim().is_empty()
                     || !(1..=8).contains(&r.study_year)
                     || r.groups.iter().any(|g| g.trim().is_empty())
+                    || r.teacher_isu.iter().any(|isu| *isu <= 0)
             }) {
                 return Err(ConfigError::InvalidValue{field:"ITMO_ID_ENROLLMENT_RULES",value:"Each rule needs a course slug, study year 1–8 and exact nonempty group names".into()});
             }
@@ -77,4 +79,6 @@ pub(crate) struct EnrollmentRule {
     pub course_slug: String,
     pub study_year: i64,
     pub groups: Vec<String>,
+    #[serde(default)]
+    pub teacher_isu: Vec<i64>,
 }

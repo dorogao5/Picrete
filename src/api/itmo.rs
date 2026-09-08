@@ -358,16 +358,18 @@ async fn persist(s: &AppState, i: &Identity, link: Option<String>) -> Result<Str
         .await
         .map_err(internal)?;
     for rule in &s.settings().itmo.enrollment_rules {
-        if !i.eligible(&rule.groups, rule.study_year) {
+        let teacher = i.isu.is_some_and(|isu| rule.teacher_isu.contains(&isu));
+        if !teacher && !i.eligible(&rule.groups, rule.study_year) {
             continue;
         }
         let membership = Uuid::new_v4().to_string();
-        let inserted=sqlx::query_scalar::<_,String>("INSERT INTO course_memberships(id,course_id,user_id,status,identity_payload) SELECT $1,id,$2,'active',$3 FROM courses WHERE slug=$4 AND is_active ON CONFLICT(course_id,user_id) DO NOTHING RETURNING id").bind(&membership).bind(&uid).bind(json!({"provider":"itmo.id","groups":i.groups,"isu":i.isu})).bind(&rule.course_slug).fetch_optional(&mut *tx).await.map_err(internal)?;
+        let inserted=sqlx::query_scalar::<_,String>("INSERT INTO course_memberships(id,course_id,user_id,status,identity_payload) SELECT $1,id,$2,'active',$3 FROM courses WHERE slug=$4 AND is_active ON CONFLICT(course_id,user_id) DO UPDATE SET identity_payload=course_memberships.identity_payload || EXCLUDED.identity_payload WHERE course_memberships.status='active' RETURNING id").bind(&membership).bind(&uid).bind(json!({"provider":"itmo.id","groups":i.groups,"isu":i.isu})).bind(&rule.course_slug).fetch_optional(&mut *tx).await.map_err(internal)?;
         if let Some(mid) = inserted {
             sqlx::query(
-                "INSERT INTO course_membership_roles(membership_id,role) VALUES($1,'student')",
+                "INSERT INTO course_membership_roles(membership_id,role) VALUES($1,$2) ON CONFLICT DO NOTHING",
             )
             .bind(mid)
+            .bind(if teacher { crate::db::types::CourseRole::Teacher } else { crate::db::types::CourseRole::Student })
             .execute(&mut *tx)
             .await
             .map_err(internal)?;
@@ -533,5 +535,64 @@ mod enrollment_tests {
         .await
         .unwrap();
         assert_eq!(status, "suspended");
+    }
+}
+
+#[cfg(test)]
+mod teacher_tests {
+    use super::*;
+    use crate::test_support;
+    #[tokio::test]
+    async fn teachers_get_only_explicitly_assigned_courses_without_registration() {
+        let ctx = test_support::setup_test_context().await;
+        let owner =
+            test_support::insert_user(ctx.state.db(), "owner", "Владелец", "password123").await;
+        let course =
+            test_support::insert_course(ctx.state.db(), "infochem-29", "Химия", &owner.id).await;
+        let mut settings = ctx.state.settings().clone();
+        settings.itmo.enrollment_rules[0].teacher_isu = vec![123456];
+        let state =
+            AppState::new(settings, ctx.state.db().clone(), ctx.state.redis().clone(), None);
+        let person = |sub: &str, isu: i64| {
+            serde_json::from_value::<Identity>(
+                json!({"sub":sub,"isu":isu,"is_student":false,"name":"Преподаватель"}),
+            )
+            .unwrap()
+        };
+        let uid = persist(&state, &person("assigned", 123456), None).await.unwrap();
+        let memberships =
+            repositories::course_memberships::list_for_user(state.db(), &uid).await.unwrap();
+        assert_eq!(memberships.len(), 1);
+        assert_eq!(memberships[0].course_id, course.id);
+        assert_eq!(memberships[0].roles, vec![crate::db::types::CourseRole::Teacher]);
+        let other = persist(&state, &person("unassigned", 123457), None).await.unwrap();
+        assert!(repositories::course_memberships::list_for_user(state.db(), &other)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(uid, persist(&state, &person("assigned", 123456), None).await.unwrap());
+    }
+}
+
+#[cfg(test)]
+mod sso_signup_tests {
+    use super::*;
+    use crate::test_support;
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn sso_mode_rejects_separate_registration() {
+        let ctx = test_support::setup_test_context().await;
+        let mut settings = ctx.state.settings().clone();
+        settings.itmo.enabled = true;
+        let state =
+            AppState::new(settings, ctx.state.db().clone(), ctx.state.redis().clone(), None);
+        let app = crate::api::router::router(state);
+        let response=app.oneshot(test_support::json_request(axum::http::Method::POST,"/api/v1/auth/signup",None,Some(json!({"username":"student","password":"password123","full_name":"Студент","pd_consent":true})))).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
+            .fetch_one(ctx.state.db())
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }
