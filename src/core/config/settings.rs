@@ -1,7 +1,7 @@
 use super::parsing::{
     env_optional, env_or_default, is_supported_image_extension, parse_bool, parse_cors_origins,
-    parse_course_context_mode, parse_environment, parse_string_list, parse_u16, parse_u32,
-    parse_u64,
+    parse_course_context_mode, parse_environment, parse_max_output_tokens_by_model,
+    parse_string_list, parse_u16, parse_u32, parse_u64,
 };
 use super::secret::load_or_create_secret_key;
 use super::types::{
@@ -211,6 +211,9 @@ impl Settings {
                 assistant_request_timeout,
                 assistant_max_concurrent_requests,
                 ai_request_timeout,
+                max_output_tokens_by_model: parse_max_output_tokens_by_model(env_optional(
+                    "LLM_MAX_OUTPUT_TOKENS_BY_MODEL",
+                ))?,
                 provider_routes,
             },
             datalab: DatalabSettings {

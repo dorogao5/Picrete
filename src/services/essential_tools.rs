@@ -2,7 +2,10 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use crate::core::config::Settings;
 
@@ -29,6 +32,7 @@ pub(crate) struct ToolGateway {
     max_rounds: usize,
     max_calls: usize,
     flow_timeout: Duration,
+    max_output_tokens_by_model: HashMap<String, u64>,
 }
 
 impl ToolGateway {
@@ -45,6 +49,7 @@ impl ToolGateway {
         gateway.max_rounds = settings.ai().essential_tools_max_rounds;
         gateway.max_calls = settings.ai().essential_tools_max_calls;
         gateway.flow_timeout = Duration::from_secs(settings.ai().assistant_request_timeout);
+        gateway.max_output_tokens_by_model = settings.ai().max_output_tokens_by_model.clone();
         Ok(gateway)
     }
 
@@ -78,6 +83,7 @@ impl ToolGateway {
             max_rounds: 8,
             max_calls: 24,
             flow_timeout: Duration::from_secs(110),
+            max_output_tokens_by_model: HashMap::new(),
         })
     }
 
@@ -203,6 +209,12 @@ pub(crate) async fn complete(
     gateway: &ToolGateway,
 ) -> Result<Value> {
     tokio::time::timeout(gateway.flow_timeout, async {
+        let model = payload["model"].as_str().unwrap_or_default();
+        if payload.get("max_tokens").is_none() {
+            if let Some(limit) = gateway.max_output_tokens_by_model.get(model) {
+                payload["max_tokens"] = json!(limit);
+            }
+        }
         payload["tools"] = definitions();
         payload["tool_choice"] = json!("auto");
         let system = payload["messages"][0]["content"].as_str().context("Missing system prompt")?;
@@ -479,6 +491,68 @@ pub(crate) mod tests {
         assert!(run(&mock).await.is_ok());
         assert_eq!(mock.model_requests.lock().unwrap().len(), 1);
         assert!(mock.tool_requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn configured_output_limit_is_exact_generic_and_preserves_explicit_payload() {
+        for (model, key, explicit, expected) in [
+            ("gpt://folder/qwen3/latest", Some("gpt://folder/qwen3/latest"), None, Some(81920)),
+            ("gpt://folder/qwen3/latest", Some("qwen3"), None, None),
+            ("gpt://folder/qwen3/latest", Some("gpt://other/qwen3/latest"), None, None),
+            ("gpt://folder/qwen3/latest", Some("gpt://folder/Qwen3/latest"), None, None),
+            ("gpt://folder/qwen3/latest", None, None, None),
+            (
+                "gpt://folder/qwen3/latest",
+                Some("gpt://folder/qwen3/latest"),
+                Some(1234),
+                Some(1234),
+            ),
+            ("deepseek-v4-pro", Some("deepseek-v4-pro"), None, Some(81920)),
+            ("deepseek-v4-pro", Some("gpt://folder/qwen3/latest"), None, None),
+        ] {
+            let mut fixture = mock(
+                vec![
+                    tool_body("calculator", json!({"expression":"2+2"}), "calc"),
+                    empty_final_body(),
+                    final_body(),
+                ],
+                StatusCode::OK,
+                success(),
+            )
+            .await;
+            if let Some(key) = key {
+                fixture.gateway.max_output_tokens_by_model.insert(key.into(), 81920);
+            }
+            let mut request = payload();
+            request["model"] = json!(model);
+            request["temperature"] = json!(0.15);
+            request["thinking"] = json!({"type":"enabled"});
+            if let Some(value) = explicit {
+                request["max_tokens"] = json!(value);
+            }
+            complete(
+                &Client::new(),
+                &format!("{}/chat/completions", fixture.url),
+                "model-secret",
+                request,
+                &fixture.gateway,
+            )
+            .await
+            .unwrap();
+            let requests = fixture.model_requests.lock().unwrap();
+            assert_eq!(requests.len(), 3);
+            for request in requests.iter() {
+                assert_eq!(
+                    request.get("max_tokens").cloned(),
+                    expected.map(|n| json!(n)),
+                    "{model} / {key:?}"
+                );
+                assert_eq!(request["model"], model);
+                assert_eq!(request["temperature"], 0.15);
+                assert_eq!(request["thinking"], json!({"type":"enabled"}));
+                assert_eq!(request["response_format"], payload()["response_format"]);
+            }
+        }
     }
 
     #[tokio::test]

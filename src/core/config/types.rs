@@ -85,6 +85,7 @@ pub(crate) struct AiSettings {
     pub(crate) essential_tools_gateway_token: String,
     pub(crate) essential_tools_max_rounds: usize,
     pub(crate) essential_tools_max_calls: usize,
+    pub(crate) max_output_tokens_by_model: HashMap<String, u64>,
     /// Credentials and OpenAI-compatible base URLs keyed by the provider kind
     /// stored in Studio's immutable assistant snapshot. The legacy fields
     /// above remain the fallback for snapshots published before per-assistant

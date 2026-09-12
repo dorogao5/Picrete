@@ -34,6 +34,50 @@ pub(super) fn parse_u64(field: &'static str, value: String) -> Result<u64, Confi
     value.parse::<u64>().map_err(|_| ConfigError::InvalidValue { field, value })
 }
 
+pub(super) fn parse_max_output_tokens_by_model(
+    raw: Option<String>,
+) -> Result<std::collections::HashMap<String, u64>, ConfigError> {
+    use serde::de::{Error, MapAccess, Visitor};
+    use std::collections::HashMap;
+    struct ExactModelMap;
+    impl<'de> Visitor<'de> for ExactModelMap {
+        type Value = HashMap<String, u64>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an exact model ID to positive integer map")
+        }
+        fn visit_map<M: MapAccess<'de>>(self, mut input: M) -> Result<Self::Value, M::Error> {
+            let mut values = HashMap::new();
+            while let Some((key, value)) = input.next_entry::<String, u64>()? {
+                if key.is_empty()
+                    || key.len() > 2048
+                    || key.chars().any(|c| c.is_whitespace() || c.is_control())
+                    || value == 0
+                    || values.len() >= 256
+                    || values.insert(key, value).is_some()
+                {
+                    return Err(M::Error::custom("invalid or duplicate model token limit"));
+                }
+            }
+            Ok(values)
+        }
+    }
+    let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
+        return Ok(HashMap::new());
+    };
+    let invalid = || ConfigError::InvalidValue {
+        field: "LLM_MAX_OUTPUT_TOKENS_BY_MODEL",
+        value: "<invalid model token limit map>".into(),
+    };
+    if raw.len() > 65536 {
+        return Err(invalid());
+    }
+    let mut parser = serde_json::Deserializer::from_str(&raw);
+    let values =
+        serde::Deserializer::deserialize_map(&mut parser, ExactModelMap).map_err(|_| invalid())?;
+    parser.end().map_err(|_| invalid())?;
+    Ok(values)
+}
+
 pub(super) fn parse_cors_origins(value: Option<String>) -> Result<Vec<String>, ConfigError> {
     let Some(raw) = value else {
         return Ok(default_cors_origins());
@@ -126,6 +170,46 @@ fn default_cors_origins() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_token_map_accepts_only_unambiguous_positive_integer_limits() {
+        assert!(parse_max_output_tokens_by_model(None).unwrap().is_empty());
+        assert!(parse_max_output_tokens_by_model(Some("".into())).unwrap().is_empty());
+        assert!(parse_max_output_tokens_by_model(Some("{}".into())).unwrap().is_empty());
+        let parsed = parse_max_output_tokens_by_model(Some(
+            r#"{"gpt://folder/qwen3/latest":81920,"gpt://folder/other":1}"#.into(),
+        ))
+        .unwrap();
+        assert_eq!(parsed["gpt://folder/qwen3/latest"], 81920);
+        assert_eq!(parsed["gpt://folder/other"], 1);
+        for raw in [
+            "[]",
+            "null",
+            "true",
+            "broken-json",
+            "{} {}",
+            r#"{"model":0}"#,
+            r#"{"model":-1}"#,
+            r#"{"model":1.0}"#,
+            r#"{"model":true}"#,
+            r#"{"model":"81920"}"#,
+            r#"{"model":null}"#,
+            r#"{"model":18446744073709551616}"#,
+            r#"{"model":1,"model":2}"#,
+            r#"{"":1}"#,
+            r#"{" model":1}"#,
+            r#"{"model\n":1}"#,
+            r#"{"sensitive-model-key":0}"#,
+        ] {
+            let error = parse_max_output_tokens_by_model(Some(raw.into())).unwrap_err();
+            assert!(matches!(
+                &error,
+                ConfigError::InvalidValue { field: "LLM_MAX_OUTPUT_TOKENS_BY_MODEL", .. }
+            ));
+            assert!(!format!("{error:?}").contains("sensitive-model-key"));
+        }
+        assert!(parse_max_output_tokens_by_model(Some(" ".repeat(65536) + "{}")).is_err());
+    }
 
     #[test]
     fn parse_cors_origins_json() {
