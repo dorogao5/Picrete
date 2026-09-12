@@ -66,6 +66,7 @@ pub(crate) struct AiGradingService {
     api_key: String,
     base_url: String,
     model: String,
+    use_grading_schema: bool,
 }
 
 impl AiGradingService {
@@ -96,6 +97,7 @@ impl AiGradingService {
             api_key,
             base_url: base_url.trim_end_matches('/').to_string(),
             model: super::assistant_chat::api_model_name(&model),
+            use_grading_schema: false,
         })
     }
 
@@ -126,6 +128,7 @@ impl AiGradingService {
                 (route.api_key.clone(), route.base_url.clone())
             };
         let mut service = Self::from_route(settings, api_key, base_url, model.clone())?;
+        service.use_grading_schema = supports_grading_schema(&policy);
         if super::assistant_chat::provider_uses_full_model_uri(&policy.decision_provider_kind) {
             service.model = model;
         }
@@ -163,7 +166,11 @@ impl AiGradingService {
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            "response_format": {"type": "json_object"}
+            "response_format": if self.use_grading_schema && request.snapshot.is_some() {
+                grading_response_format(&request.rubric, request.max_score)?
+            } else {
+                json!({"type": "json_object"})
+            }
         });
 
         if self.model.to_ascii_lowercase().contains("deepseek") {
@@ -413,27 +420,81 @@ pub(crate) fn bank_rubric(snapshot: &Value) -> Result<(Vec<Value>, f64)> {
     Ok((rubric, maximum))
 }
 
-fn validate_criterion_identity(result: &Value, rubric: &Value) -> Result<()> {
-    fn collect(value: &Value, into: &mut Vec<(String, f64)>) {
-        if let Some(children) =
-            value.get("criteria").and_then(Value::as_array).or_else(|| value.as_array())
-        {
-            for child in children {
-                collect(child, into);
-            }
-        } else {
-            let name = ["criterion_name", "name", "title"]
-                .iter()
-                .find_map(|key| value.get(*key).and_then(Value::as_str));
-            let max =
-                value.get("max_score").or_else(|| value.get("maxScore")).and_then(Value::as_f64);
-            if let (Some(name), Some(max)) = (name, max) {
-                into.push((name.trim().to_string(), max));
-            }
+fn collect_rubric_criteria(value: &Value, into: &mut Vec<(String, f64)>) {
+    if let Some(children) =
+        value.get("criteria").and_then(Value::as_array).or_else(|| value.as_array())
+    {
+        for child in children {
+            collect_rubric_criteria(child, into);
+        }
+    } else {
+        let name = ["criterion_name", "name", "title"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(Value::as_str));
+        let max = value.get("max_score").or_else(|| value.get("maxScore")).and_then(Value::as_f64);
+        if let (Some(name), Some(max)) = (name, max) {
+            into.push((name.trim().to_string(), max));
         }
     }
+}
+
+// Confirmed transport capability, not a global switch for other providers or
+// a new verification pass. Legacy/unpublished requests retain json_object.
+fn supports_grading_schema(policy: &PublishedRuntimePolicy) -> bool {
+    !policy.is_legacy()
+        && policy.decision_supports_json_schema
+        && policy.decision_provider_kind.trim().eq_ignore_ascii_case("yandex")
+        && policy.decision_model_id.to_ascii_lowercase().contains("qwen")
+}
+
+fn grading_response_format(rubric: &Value, max_score: f64) -> Result<Value> {
+    let mut criteria = Vec::new();
+    collect_rubric_criteria(rubric, &mut criteria);
+    anyhow::ensure!(max_score.is_finite() && max_score > 0.0, "Invalid rubric maximum");
+    anyhow::ensure!(!criteria.is_empty(), "Missing rubric criteria");
+    anyhow::ensure!(
+        criteria.iter().all(|(name, max)| !name.is_empty() && max.is_finite() && *max >= 0.0),
+        "Invalid rubric criterion"
+    );
+    anyhow::ensure!(
+        (criteria.iter().map(|(_, max)| max).sum::<f64>() - max_score).abs() < 0.01,
+        "Rubric maxima do not add up"
+    );
+    let variants: Vec<Value> = criteria
+        .iter()
+        .map(|(name, maximum)| {
+            json!({
+                "type":"object", "additionalProperties":false,
+                "required":["criterion_name","score","max_score","comment"],
+                "properties":{
+                    "criterion_name":{"type":"string","enum":[name]},
+                    "score":{"type":"number","minimum":0,"maximum":maximum},
+                    "max_score":{"type":"number","enum":[maximum]},
+                    "comment":{"type":"string"}
+                }
+            })
+        })
+        .collect();
+    Ok(json!({"type":"json_schema","json_schema":{
+        "name":"grading_result", "strict":true,
+        "schema":{
+            "type":"object", "additionalProperties":false,
+            "required":["unreadable","needs_teacher_review","total_score","max_score","criteria_scores","feedback"],
+            "properties":{
+                "unreadable":{"type":"boolean"},
+                "needs_teacher_review":{"type":"boolean"},
+                "total_score":{"type":"number","minimum":0,"maximum":max_score},
+                "max_score":{"type":"number","enum":[max_score]},
+                "criteria_scores":{"type":"array","minItems":criteria.len(),"maxItems":criteria.len(),"items":{"anyOf":variants}},
+                "feedback":{"type":"string"}
+            }
+        }
+    }}))
+}
+
+fn validate_criterion_identity(result: &Value, rubric: &Value) -> Result<()> {
     let mut expected = Vec::new();
-    collect(rubric, &mut expected);
+    collect_rubric_criteria(rubric, &mut expected);
     let actual = result["criteria_scores"].as_array().context("Missing criteria_scores")?;
     anyhow::ensure!(expected.len() == actual.len(), "Wrong number of grading criteria");
     for item in actual {
@@ -451,6 +512,148 @@ fn validate_criterion_identity(result: &Value, rubric: &Value) -> Result<()> {
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+    #[test]
+    fn grading_schema_is_scoped_to_published_yandex_qwen() {
+        for (provider, model, expected) in [
+            ("yandex", "gpt://folder/qwen3-235b/latest", true),
+            ("yandex", "deepseek-v3", false),
+            ("openrouter", "qwen3-235b", false),
+            ("", "qwen3-235b", false),
+        ] {
+            let policy: PublishedRuntimePolicy = serde_json::from_value(json!({
+                "policy_version":"test", "decision_provider_kind":provider,
+                "decision_supports_json_schema":true,
+                "decision_model_id":model
+            }))
+            .unwrap();
+            assert_eq!(supports_grading_schema(&policy), expected);
+        }
+        let legacy = serde_json::from_value(json!({})).unwrap();
+        assert!(!supports_grading_schema(&legacy));
+        for flag in [None, Some(false)] {
+            let mut value = json!({"policy_version":"test","decision_provider_kind":"yandex","decision_model_id":"gpt://folder/qwen3-235b/latest"});
+            if let Some(flag) = flag {
+                value["decision_supports_json_schema"] = json!(flag);
+            }
+            let policy: PublishedRuntimePolicy = serde_json::from_value(value).unwrap();
+            assert!(
+                !supports_grading_schema(&policy),
+                "Old and explicitly disabled snapshots retain json_object"
+            );
+        }
+        let policy: PublishedRuntimePolicy =
+            serde_json::from_value(json!({"decision_supports_json_schema":true})).unwrap();
+        assert_eq!(
+            serde_json::to_value(policy).unwrap()["decision_supports_json_schema"],
+            true,
+            "Capability survives typed snapshot publication"
+        );
+    }
+
+    #[test]
+    fn grading_schema_uses_dynamic_rubric_names_and_bounds() {
+        let rubric =
+            json!({"criteria":[{"name":"Метод","max_score":3.5},{"name":"Ответ","max_score":1.5}]});
+        let format = grading_response_format(&rubric, 5.0).unwrap();
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["json_schema"]["strict"], true);
+        let schema = &format["json_schema"]["schema"];
+        assert_eq!(schema["additionalProperties"], false);
+        for field in [
+            "total_score",
+            "max_score",
+            "criteria_scores",
+            "feedback",
+            "unreadable",
+            "needs_teacher_review",
+        ] {
+            assert!(schema["required"].as_array().unwrap().contains(&json!(field)));
+        }
+        assert_eq!(schema["properties"]["total_score"]["minimum"], 0);
+        assert_eq!(schema["properties"]["total_score"]["maximum"], 5.0);
+        assert_eq!(schema["properties"]["max_score"]["enum"], json!([5.0]));
+        let scores = &schema["properties"]["criteria_scores"];
+        assert_eq!(scores["minItems"], 2);
+        assert_eq!(scores["maxItems"], 2);
+        for (index, name, maximum) in [(0, "Метод", 3.5), (1, "Ответ", 1.5)] {
+            let variant = &scores["items"]["anyOf"][index];
+            assert_eq!(variant["properties"]["criterion_name"]["enum"], json!([name]));
+            assert_eq!(variant["properties"]["score"]["maximum"], maximum);
+            assert_eq!(variant["properties"]["max_score"]["enum"], json!([maximum]));
+        }
+        assert!(grading_response_format(&rubric, 6.0).is_err());
+        assert!(grading_response_format(&json!({}), 5.0).is_err());
+        assert!(grading_response_format(&rubric, f64::INFINITY).is_err());
+    }
+
+    #[tokio::test]
+    async fn grading_schema_transport_rejects_empty_object_without_retry_or_model_switch() {
+        use axum::{routing::post, Json, Router};
+        use std::sync::{Arc, Mutex};
+        let valid = json!({"unreadable":false,"needs_teacher_review":false,"total_score":5,"max_score":5,
+            "criteria_scores":[{"criterion_name":"Метод","score":5,"max_score":5,"comment":"Верно"}],"feedback":"Верно"});
+        for (use_schema, published, model, result) in [
+            (true, true, "qwen", json!({})),
+            (true, true, "qwen", valid.clone()),
+            (false, true, "deepseek", valid.clone()),
+            (true, false, "qwen", valid),
+        ] {
+            let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+            let observed = seen.clone();
+            let content = result.to_string();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let router = Router::new().route(
+                "/chat/completions",
+                post(move |Json(body): Json<Value>| {
+                    observed.lock().unwrap().push(body);
+                    let content = content.clone();
+                    async move { Json(json!({"choices":[{"message":{"content":content}}]})) }
+                }),
+            );
+            let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            let service = AiGradingService {
+                client: Client::builder().timeout(Duration::from_secs(2)).build().unwrap(),
+                api_key: "local-test".into(),
+                base_url: format!("http://{address}"),
+                model: model.into(),
+                use_grading_schema: use_schema,
+            };
+            let output = service
+                .run_precheck(LlmPrecheckRequest {
+                    submission_id: None,
+                    snapshot: published.then(
+                        || json!({"prompts":{"grader":{"system_prompt":"Local grading test"}}}),
+                    ),
+                    ocr_markdown_pages: vec!["Student solution".into()],
+                    ocr_report_issues: vec![],
+                    report_summary: None,
+                    task_description: "Task".into(),
+                    reference_solution: "Reference".into(),
+                    rubric: json!({"criteria":[{"criterion_name":"Метод","max_score":5}]}),
+                    max_score: 5.0,
+                    chemistry_rules: None,
+                })
+                .await;
+            server.abort();
+            if result == json!({}) {
+                assert!(output.unwrap_err().to_string().contains("Missing total_score"));
+            } else {
+                assert_eq!(output.unwrap()["total_score"], 5);
+            }
+            let requests = seen.lock().unwrap();
+            assert_eq!(requests.len(), 1, "No paid retry or replacement model on contract failure");
+            assert_eq!(requests[0]["model"], model);
+            assert_eq!(
+                requests[0]["response_format"]["type"],
+                if use_schema && published { "json_schema" } else { "json_object" }
+            );
+            if model == "deepseek" {
+                assert_eq!(requests[0]["thinking"], json!({"type":"enabled"}));
+            }
+        }
+    }
+
     #[test]
     fn rubric_identity_survives_multiple_tasks_and_rejects_invented_criteria() {
         let rubric = json!({"criteria":[{"criteria":[{"criterion_name":"Метод","max_score":3}]},{"criteria":[{"criterion_name":"Метод","max_score":3}]}]});

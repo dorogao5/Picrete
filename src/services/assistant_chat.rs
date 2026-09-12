@@ -19,6 +19,8 @@ pub(crate) struct PublishedRuntimePolicy {
     #[serde(default)]
     pub(crate) decision_provider_kind: String,
     #[serde(default)]
+    pub(crate) decision_supports_json_schema: bool,
+    #[serde(default)]
     pub(crate) tier: String,
     #[serde(default)]
     pub(crate) allowed_uses: Vec<String>,
@@ -31,6 +33,7 @@ impl PublishedRuntimePolicy {
             && self.decision_model_id.trim().is_empty()
             && self.tutor_provider_kind.trim().is_empty()
             && self.decision_provider_kind.trim().is_empty()
+            && !self.decision_supports_json_schema
             && self.tier.trim().is_empty()
             && self.allowed_uses.is_empty()
     }
@@ -490,6 +493,7 @@ mod tests {
             decision_model_id: "deepseek-v4-pro".to_string(),
             tutor_provider_kind: String::new(),
             decision_provider_kind: String::new(),
+            decision_supports_json_schema: false,
             tier: "decision".to_string(),
             allowed_uses: vec!["student_tutor".to_string(), "grading".to_string()],
         };
@@ -505,6 +509,7 @@ mod tests {
             decision_model_id: "deepseek-v4-pro".to_string(),
             tutor_provider_kind: String::new(),
             decision_provider_kind: String::new(),
+            decision_supports_json_schema: false,
             tier: "decision".to_string(),
             allowed_uses: vec!["student_tutor".to_string()],
         };
