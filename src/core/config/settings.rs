@@ -80,6 +80,7 @@ impl Settings {
             })?,
             None => std::collections::HashMap::new(),
         };
+        let studio_api_url = env_or_default("STUDIO_API_URL", "");
         let studio_integration_token = env_or_default("STUDIO_INTEGRATION_TOKEN", "");
 
         let datalab_api_key = env_or_default("DATALAB_API_KEY", "");
@@ -243,7 +244,10 @@ impl Settings {
             },
             telemetry: TelemetrySettings { log_level, json, prometheus_enabled },
             itmo: crate::core::config::itmo::ItmoConfig::load()?,
-            studio_integration: StudioIntegrationSettings { token: studio_integration_token },
+            studio_integration: StudioIntegrationSettings {
+                api_url: studio_api_url,
+                token: studio_integration_token,
+            },
         };
 
         settings.validate()?;

@@ -25,7 +25,7 @@ pub(crate) fn router() -> Router<AppState> {
 }
 
 #[derive(Debug, Deserialize)]
-struct TaskBankExport {
+pub(crate) struct TaskBankExport {
     source: TaskBankExportSource,
     #[serde(default)]
     paragraphs: Vec<TaskBankExportParagraph>,
@@ -73,6 +73,28 @@ async fn import_bank(
     Json(payload): Json<TaskBankExport>,
 ) -> Result<Json<Value>, ApiError> {
     authenticate_studio(&state, &headers)?;
+    let imported = import_task_bank(&state, &course_id, payload).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "source_code": imported.source_code,
+        "source_id": imported.source_id,
+        "item_ids": imported.item_ids,
+        "imported_items": imported.item_ids.len(),
+        "imported_images": 0,
+    })))
+}
+
+pub(crate) struct ImportedTaskBank {
+    pub(crate) source_code: String,
+    pub(crate) source_id: String,
+    pub(crate) item_ids: Vec<String>,
+}
+
+pub(crate) async fn import_task_bank(
+    state: &AppState,
+    course_id: &str,
+    payload: TaskBankExport,
+) -> Result<ImportedTaskBank, ApiError> {
     let source_code = payload.source.code.trim().to_string();
     let source_title = payload.source.title.trim().to_string();
     let source_version = payload.source.version.trim().to_string();
@@ -92,7 +114,7 @@ async fn import_bank(
             "Экспорт должен содержать от 1 до 1000 разделов".into(),
         ));
     }
-    repositories::courses::find_by_id(state.db(), &course_id)
+    repositories::courses::find_by_id(state.db(), course_id)
         .await
         .map_err(|e| ApiError::internal(e, "Failed to validate task bank course"))?
         .ok_or_else(|| ApiError::NotFound("Курс Picrete не найден".into()))?;
@@ -126,8 +148,7 @@ async fn import_bank(
     .await
     .map_err(|e| ApiError::internal(e, "Failed to scope imported task bank source"))?;
 
-    let mut imported_items = 0usize;
-    let imported_images = 0usize;
+    let mut item_ids = Vec::new();
     for paragraph in payload.paragraphs {
         let paragraph_value = paragraph.paragraph.trim();
         let topic_value = paragraph.topic.trim();
@@ -182,14 +203,12 @@ async fn import_bank(
             repositories::task_bank::replace_item_images(&mut tx, &item_id, &[])
                 .await
                 .map_err(|e| ApiError::internal(e, "Failed to finalize task bank item"))?;
-            imported_items += 1;
+            item_ids.push(item_id);
         }
     }
     tx.commit().await.map_err(|e| ApiError::internal(e, "Failed to commit task bank import"))?;
-    tracing::info!(course_id = %course_id, source_code = %source_code, imported_items, imported_images, "Studio task bank imported");
-    Ok(Json(
-        json!({"ok": true, "source_code": source_code, "imported_items": imported_items, "imported_images": imported_images}),
-    ))
+    tracing::info!(course_id = %course_id, source_code = %source_code, imported_items = item_ids.len(), "Studio task bank imported");
+    Ok(ImportedTaskBank { source_code, source_id: source.id, item_ids })
 }
 
 fn valid_difficulty(value: &str) -> Option<&str> {

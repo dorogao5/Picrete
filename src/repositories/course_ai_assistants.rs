@@ -4,6 +4,7 @@ use time::PrimitiveDateTime;
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct CourseAiAssistant {
+    pub(crate) studio_assistant_id: String,
     pub(crate) name: String,
     pub(crate) discipline: String,
     pub(crate) snapshot_version: String,
@@ -53,7 +54,7 @@ pub(crate) async fn upsert(
             snapshot = EXCLUDED.snapshot,
             enabled = TRUE,
             synced_at = EXCLUDED.synced_at
-         RETURNING name, discipline, snapshot_version,
+        RETURNING studio_assistant_id, name, discipline, snapshot_version,
                    snapshot, enabled, synced_at",
     )
     .bind(course_id)
@@ -79,7 +80,7 @@ pub(crate) async fn find_with_executor(
     course_id: &str,
 ) -> Result<Option<CourseAiAssistant>, sqlx::Error> {
     sqlx::query_as::<_, CourseAiAssistant>(
-        "SELECT name, discipline, snapshot_version,
+        "SELECT studio_assistant_id, name, discipline, snapshot_version,
                 snapshot, enabled, synced_at
          FROM course_ai_assistants WHERE course_id = $1",
     )

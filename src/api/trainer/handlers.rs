@@ -5,7 +5,8 @@ use axum::http::StatusCode;
 use axum::Json;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -31,6 +32,14 @@ pub(super) struct ListTrainerSetsQuery {
     limit: i64,
 }
 
+#[derive(Debug, Serialize)]
+struct StudioTrainerGenerationRequest {
+    assistant_id: String,
+    topic: String,
+    difficulty: String,
+    count: i64,
+}
+
 pub(super) async fn generate_set(
     Path(course_id): Path<String>,
     CurrentUser(user): CurrentUser,
@@ -41,6 +50,11 @@ pub(super) async fn generate_set(
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let source = resolve_source(state.db(), &course_id, &payload.source).await?;
+    if source.code == "studio_fizicheskaya_himiya"
+        && !state.settings().studio_integration().api_url.trim().is_empty()
+    {
+        return generate_physical_chemistry_set(&state, &course_id, &user.id, &payload).await;
+    }
     let filter_params = build_filter_params(
         &source.id,
         &payload.filters.paragraph,
@@ -136,6 +150,113 @@ pub(super) async fn generate_set(
     tx.commit().await.map_err(|e| ApiError::internal(e, "Failed to commit trainer set"))?;
 
     let response = load_set_response(&state, &course_id, &user.id, &trainer_set_id).await?;
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
+async fn generate_physical_chemistry_set(
+    state: &AppState,
+    course_id: &str,
+    student_id: &str,
+    payload: &TrainerGenerateRequest,
+) -> Result<(StatusCode, Json<TrainerSetResponse>), ApiError> {
+    let topic = payload
+        .filters
+        .topic
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+        ApiError::BadRequest("Для генерации выберите подтему физической химии".into())
+    })?;
+    let difficulty = payload.filters.difficulty.as_deref().unwrap_or("easy").trim().to_string();
+    let assistant = repositories::course_ai_assistants::find(state.db(), course_id)
+        .await
+        .map_err(|e| ApiError::internal(e, "Не удалось загрузить ассистента курса"))?
+        .ok_or_else(|| {
+            ApiError::UnprocessableEntity("Ассистент физической химии ещё не опубликован".into())
+        })?;
+    let settings = state.settings().studio_integration();
+    if settings.token.trim().is_empty() {
+        return Err(ApiError::ServiceUnavailable(
+            "Генерация задач временно недоступна: Studio не настроена".into(),
+        ));
+    }
+    let url = format!("{}/api/internal/trainer/generate", settings.api_url.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(&settings.token)
+        .json(&StudioTrainerGenerationRequest {
+            assistant_id: assistant.studio_assistant_id,
+            topic: topic.to_string(),
+            difficulty: difficulty.clone(),
+            count: payload.count,
+        })
+        .timeout(Duration::from_secs(1200))
+        .send()
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("Генерация задач не завершена: {e}")))?;
+    if !response.status().is_success() {
+        return Err(ApiError::ServiceUnavailable(format!(
+            "Генерация задач не завершена: Studio вернула HTTP {}",
+            response.status()
+        )));
+    }
+    let export = response
+        .json::<crate::api::studio_grading::TaskBankExport>()
+        .await
+        .map_err(|e| ApiError::internal(e, "Studio вернула некорректный набор задач"))?;
+    let imported = crate::api::studio_grading::import_task_bank(state, course_id, export).await?;
+    if imported.item_ids.len() != payload.count as usize {
+        return Err(ApiError::ServiceUnavailable("Неполный набор задач не выдан студенту".into()));
+    }
+
+    let now = primitive_now_utc();
+    let trainer_set_id = Uuid::new_v4().to_string();
+    let filters_json = serde_json::json!({
+        "q": payload.filters.q,
+        "task_type": payload.filters.task_type,
+        "difficulty": difficulty,
+        "volume": payload.filters.volume,
+        "has_solution": true,
+        "mode": "studio_generated",
+        "paragraph": normalize_optional(&payload.filters.paragraph),
+        "topic": topic,
+        "has_answer": true,
+        "count": payload.count,
+    });
+    let title = payload
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("{} · новый набор", topic));
+    let mut tx = state
+        .db()
+        .begin()
+        .await
+        .map_err(|e| ApiError::internal(e, "Не удалось начать сохранение набора"))?;
+    repositories::trainer_sets::create(
+        &mut *tx,
+        repositories::trainer_sets::CreateTrainerSet {
+            id: &trainer_set_id,
+            student_id,
+            course_id,
+            title: &title,
+            source_id: &imported.source_id,
+            filters: filters_json,
+            now,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Не удалось сохранить набор задач"))?;
+    repositories::trainer_sets::insert_items(&mut tx, &trainer_set_id, &imported.item_ids)
+        .await
+        .map_err(|e| ApiError::internal(e, "Не удалось добавить задачи в набор"))?;
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::internal(e, "Не удалось завершить сохранение набора"))?;
+    let response = load_set_response(state, course_id, student_id, &trainer_set_id).await?;
     Ok((StatusCode::CREATED, Json(response)))
 }
 

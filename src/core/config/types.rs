@@ -107,6 +107,7 @@ impl AiSettings {
 
 #[derive(Debug, Clone)]
 pub(crate) struct StudioIntegrationSettings {
+    pub(crate) api_url: String,
     pub(crate) token: String,
 }
 
