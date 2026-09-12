@@ -37,25 +37,56 @@ pub(super) fn parse_u64(field: &'static str, value: String) -> Result<u64, Confi
 pub(super) fn parse_max_output_tokens_by_model(
     raw: Option<String>,
 ) -> Result<std::collections::HashMap<String, u64>, ConfigError> {
+    let field = "LLM_MAX_OUTPUT_TOKENS_BY_MODEL";
+    let values = parse_exact_model_map::<u64>(raw, field)?;
+    if values.values().any(|v| *v == 0) {
+        return Err(invalid_model_map(field));
+    }
+    Ok(values)
+}
+
+pub(super) fn parse_sampling_by_model(
+    raw: Option<String>,
+) -> Result<std::collections::HashMap<String, super::types::ModelSampling>, ConfigError> {
+    let field = "LLM_SAMPLING_BY_MODEL";
+    let values = parse_exact_model_map::<super::types::ModelSampling>(raw, field)?;
+    for v in values.values() {
+        if v.temperature.is_some_and(|n| !(0.0..=2.0).contains(&n))
+            || v.top_p.is_some_and(|n| !(0.0..=1.0).contains(&n))
+            || v.presence_penalty.is_some_and(|n| !(-2.0..=2.0).contains(&n))
+        {
+            return Err(invalid_model_map(field));
+        }
+    }
+    Ok(values)
+}
+
+fn invalid_model_map(field: &'static str) -> ConfigError {
+    ConfigError::InvalidValue { field, value: "<invalid model settings map>".into() }
+}
+
+fn parse_exact_model_map<T: serde::de::DeserializeOwned>(
+    raw: Option<String>,
+    field: &'static str,
+) -> Result<std::collections::HashMap<String, T>, ConfigError> {
     use serde::de::{Error, MapAccess, Visitor};
     use std::collections::HashMap;
-    struct ExactModelMap;
-    impl<'de> Visitor<'de> for ExactModelMap {
-        type Value = HashMap<String, u64>;
+    struct ExactModelMap<T>(std::marker::PhantomData<T>);
+    impl<'de, T: serde::Deserialize<'de>> Visitor<'de> for ExactModelMap<T> {
+        type Value = HashMap<String, T>;
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("an exact model ID to positive integer map")
+            formatter.write_str("an exact model ID settings map")
         }
         fn visit_map<M: MapAccess<'de>>(self, mut input: M) -> Result<Self::Value, M::Error> {
             let mut values = HashMap::new();
-            while let Some((key, value)) = input.next_entry::<String, u64>()? {
+            while let Some((key, value)) = input.next_entry::<String, T>()? {
                 if key.is_empty()
                     || key.len() > 2048
                     || key.chars().any(|c| c.is_whitespace() || c.is_control())
-                    || value == 0
                     || values.len() >= 256
                     || values.insert(key, value).is_some()
                 {
-                    return Err(M::Error::custom("invalid or duplicate model token limit"));
+                    return Err(M::Error::custom("invalid or duplicate model settings"));
                 }
             }
             Ok(values)
@@ -64,16 +95,14 @@ pub(super) fn parse_max_output_tokens_by_model(
     let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
         return Ok(HashMap::new());
     };
-    let invalid = || ConfigError::InvalidValue {
-        field: "LLM_MAX_OUTPUT_TOKENS_BY_MODEL",
-        value: "<invalid model token limit map>".into(),
-    };
+    let invalid = || invalid_model_map(field);
     if raw.len() > 65536 {
         return Err(invalid());
     }
     let mut parser = serde_json::Deserializer::from_str(&raw);
     let values =
-        serde::Deserializer::deserialize_map(&mut parser, ExactModelMap).map_err(|_| invalid())?;
+        serde::Deserializer::deserialize_map(&mut parser, ExactModelMap(std::marker::PhantomData))
+            .map_err(|_| invalid())?;
     parser.end().map_err(|_| invalid())?;
     Ok(values)
 }
@@ -170,6 +199,57 @@ fn default_cors_origins() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampling_map_validates_types_ranges_duplicates_and_unknown_fields() {
+        assert!(parse_sampling_by_model(None).unwrap().is_empty());
+        assert!(parse_sampling_by_model(Some("{}".into())).unwrap().is_empty());
+        assert!(parse_sampling_by_model(Some(r#"{"model":{}}"#.into())).unwrap()["model"]
+            .temperature
+            .is_none());
+        for (temperature, top_p, presence) in [(0.0, 0.0, -2.0), (2.0, 1.0, 2.0), (0.6, 0.95, 0.0)]
+        {
+            let map = parse_sampling_by_model(Some(serde_json::json!({"gpt://folder/model":{"temperature":temperature,"top_p":top_p,"presence_penalty":presence}}).to_string())).unwrap();
+            assert_eq!(map["gpt://folder/model"].temperature, Some(temperature));
+        }
+        for raw in [
+            "null",
+            "[]",
+            "{} {}",
+            r#"{"model":null}"#,
+            r#"{"model":0}"#,
+            r#"{"model":{"temperature":true}}"#,
+            r#"{"model":{"temperature":null}}"#,
+            r#"{"model":{"temperature":"0.6"}}"#,
+            r#"{"model":{"temperature":NaN}}"#,
+            r#"{"model":{"temperature":1e400}}"#,
+            r#"{"model":{"top_k":20}}"#,
+            r#"{"model":{"temperature":1,"temperature":0.6}}"#,
+            r#"{"model":{},"model":{}}"#,
+            r#"{" model":{}}"#,
+            r#"{"sensitive-model":{"top_p":false}}"#,
+        ] {
+            let error = parse_sampling_by_model(Some(raw.into())).unwrap_err();
+            assert!(matches!(
+                &error,
+                ConfigError::InvalidValue { field: "LLM_SAMPLING_BY_MODEL", .. }
+            ));
+            assert!(!format!("{error:?}").contains("sensitive-model"));
+        }
+        for (field, number) in [
+            ("temperature", -0.1),
+            ("temperature", 2.1),
+            ("top_p", -0.1),
+            ("top_p", 1.1),
+            ("presence_penalty", -2.1),
+            ("presence_penalty", 2.1),
+        ] {
+            assert!(parse_sampling_by_model(Some(
+                serde_json::json!({"model":{field:number}}).to_string()
+            ))
+            .is_err());
+        }
+    }
 
     #[test]
     fn output_token_map_accepts_only_unambiguous_positive_integer_limits() {

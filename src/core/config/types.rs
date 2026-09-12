@@ -86,11 +86,31 @@ pub(crate) struct AiSettings {
     pub(crate) essential_tools_max_rounds: usize,
     pub(crate) essential_tools_max_calls: usize,
     pub(crate) max_output_tokens_by_model: HashMap<String, u64>,
+    pub(crate) sampling_by_model: HashMap<String, ModelSampling>,
     /// Credentials and OpenAI-compatible base URLs keyed by the provider kind
     /// stored in Studio's immutable assistant snapshot. The legacy fields
     /// above remain the fallback for snapshots published before per-assistant
     /// provider routing was introduced.
     pub(crate) provider_routes: HashMap<String, AiProviderRoute>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelSampling {
+    #[serde(default, deserialize_with = "sampling_number")]
+    pub(crate) temperature: Option<f64>,
+    #[serde(default, deserialize_with = "sampling_number")]
+    pub(crate) top_p: Option<f64>,
+    #[serde(default, deserialize_with = "sampling_number")]
+    pub(crate) presence_penalty: Option<f64>,
+}
+
+fn sampling_number<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<f64>, D::Error> {
+    let value = <f64 as serde::Deserialize>::deserialize(input)?;
+    if !value.is_finite() {
+        return Err(serde::de::Error::custom("sampling number must be finite"));
+    }
+    Ok(Some(value))
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

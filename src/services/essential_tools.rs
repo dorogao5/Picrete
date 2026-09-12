@@ -7,9 +7,10 @@ use std::{
     time::Duration,
 };
 
-use crate::core::config::Settings;
+use crate::core::config::{ModelSampling, Settings};
 
-const MAX_BODY_BYTES: usize = 256 * 1024;
+const MAX_TOOL_BODY_BYTES: usize = 256 * 1024;
+const MAX_MODEL_BODY_BYTES: usize = 4 * 1024 * 1024;
 const TOOL_FINALIZATION_PROMPT: &str = concat!(
     "Предыдущий ответ завершился без итогового текста. Завершите ответ для этой же ",
     "задачи в ранее заданном формате, используя уже полученные результаты инструментов. ",
@@ -33,6 +34,7 @@ pub(crate) struct ToolGateway {
     max_calls: usize,
     flow_timeout: Duration,
     max_output_tokens_by_model: HashMap<String, u64>,
+    sampling_by_model: HashMap<String, ModelSampling>,
 }
 
 impl ToolGateway {
@@ -50,6 +52,7 @@ impl ToolGateway {
         gateway.max_calls = settings.ai().essential_tools_max_calls;
         gateway.flow_timeout = Duration::from_secs(settings.ai().assistant_request_timeout);
         gateway.max_output_tokens_by_model = settings.ai().max_output_tokens_by_model.clone();
+        gateway.sampling_by_model = settings.ai().sampling_by_model.clone();
         Ok(gateway)
     }
 
@@ -84,6 +87,7 @@ impl ToolGateway {
             max_calls: 24,
             flow_timeout: Duration::from_secs(110),
             max_output_tokens_by_model: HashMap::new(),
+            sampling_by_model: HashMap::new(),
         })
     }
 
@@ -101,7 +105,7 @@ impl ToolGateway {
             "Essential tool returned HTTP {}",
             response.status()
         );
-        let result = bounded_json(response).await?;
+        let result = bounded_json(response, MAX_TOOL_BODY_BYTES).await?;
         anyhow::ensure!(
             result["tool_name"] == name
                 && result["tool_version"]
@@ -128,13 +132,10 @@ impl ToolGateway {
     }
 }
 
-async fn bounded_json(mut response: reqwest::Response) -> Result<Value> {
+async fn bounded_json(mut response: reqwest::Response, limit: usize) -> Result<Value> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
-        anyhow::ensure!(
-            bytes.len() + chunk.len() <= MAX_BODY_BYTES,
-            "Tool flow response too large"
-        );
+        anyhow::ensure!(bytes.len() + chunk.len() <= limit, "Tool flow response too large");
         bytes.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&bytes).context("Tool flow returned invalid JSON")
@@ -209,10 +210,15 @@ pub(crate) async fn complete(
     gateway: &ToolGateway,
 ) -> Result<Value> {
     tokio::time::timeout(gateway.flow_timeout, async {
-        let model = payload["model"].as_str().unwrap_or_default();
+        let model = payload["model"].as_str().unwrap_or_default().to_owned();
         if payload.get("max_tokens").is_none() {
-            if let Some(limit) = gateway.max_output_tokens_by_model.get(model) {
+            if let Some(limit) = gateway.max_output_tokens_by_model.get(&model) {
                 payload["max_tokens"] = json!(limit);
+            }
+        }
+        if let Some(sampling) = gateway.sampling_by_model.get(&model) {
+            for (key, value) in [("temperature", sampling.temperature), ("top_p", sampling.top_p), ("presence_penalty", sampling.presence_penalty)] {
+                if let Some(value) = value { payload[key] = json!(value); }
             }
         }
         payload["tools"] = definitions();
@@ -232,7 +238,7 @@ pub(crate) async fn complete(
             let response = client.post(url).bearer_auth(api_key).json(&payload).send().await
                 .context("Tool-enabled model request failed")?;
             anyhow::ensure!(response.status().is_success(), "Tool-enabled model returned HTTP {}", response.status());
-            let mut body = bounded_json(response).await?;
+            let mut body = bounded_json(response, MAX_MODEL_BODY_BYTES).await?;
             tracing::info!(%flow_id, round, finalization_continuations, model = %payload["model"], usage = %body["usage"], "Essential tool model completion received");
             usage_by_call.push(body["usage"].clone());
             for (index, key) in ["prompt_tokens", "completion_tokens", "total_tokens"].iter().enumerate() {
@@ -494,6 +500,40 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn model_response_accepts_four_mib_and_rejects_one_byte_over() {
+        for over in [false, true] {
+            let mut response = final_body();
+            response["choices"][0]["message"]["reasoning_content"] = json!("");
+            let padding = MAX_MODEL_BODY_BYTES + usize::from(over) - response.to_string().len();
+            // Count UTF-8 bytes, not characters, for a multilingual reasoning response.
+            response["choices"][0]["message"]["reasoning_content"] =
+                json!("я".repeat(padding / 2) + &"x".repeat(padding % 2));
+            assert_eq!(response.to_string().len(), MAX_MODEL_BODY_BYTES + usize::from(over));
+            let fixture = mock(vec![response], StatusCode::OK, success()).await;
+            let result = run(&fixture).await;
+            if over {
+                assert!(result.unwrap_err().to_string().contains("response too large"));
+            } else {
+                assert_eq!(
+                    result.unwrap()["choices"][0]["message"]["content"],
+                    final_body()["choices"][0]["message"]["content"]
+                );
+            }
+            assert_eq!(fixture.model_requests.lock().unwrap().len(), 1);
+            assert!(fixture.tool_requests.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn gateway_response_still_rejects_more_than_256_kib() {
+        let fixture = mock(vec![tool_body("calculator", json!({"expression":"2+2"}), "calc")], StatusCode::OK,
+            json!({"status":"success","normalized_result":{"value":"x".repeat(MAX_TOOL_BODY_BYTES)},"trace_id":"large"})).await;
+        assert!(run(&fixture).await.unwrap_err().to_string().contains("response too large"));
+        assert_eq!(fixture.model_requests.lock().unwrap().len(), 1);
+        assert_eq!(fixture.tool_requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn configured_output_limit_is_exact_generic_and_preserves_explicit_payload() {
         for (model, key, explicit, expected) in [
             ("gpt://folder/qwen3/latest", Some("gpt://folder/qwen3/latest"), None, Some(81920)),
@@ -550,6 +590,69 @@ pub(crate) mod tests {
                 assert_eq!(request["model"], model);
                 assert_eq!(request["temperature"], 0.15);
                 assert_eq!(request["thinking"], json!({"type":"enabled"}));
+                assert_eq!(request["response_format"], payload()["response_format"]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn operator_sampling_overrides_only_exact_model_and_configured_fields() {
+        for (model, key, partial, matched) in [
+            ("gpt://folder/qwen/latest", Some("gpt://folder/qwen/latest"), false, true),
+            ("gpt://folder/qwen/latest", Some("gpt://folder/qwen/latest"), true, true),
+            ("gpt://folder/qwen/latest", Some("qwen"), false, false),
+            ("gpt://folder/qwen/latest", Some("gpt://folder/Qwen/latest"), false, false),
+            ("gpt://folder/qwen/latest", None, false, false),
+            ("deepseek-v4-pro", Some("deepseek-v4-pro"), false, true),
+            ("deepseek-v4-pro", Some("gpt://folder/qwen/latest"), false, false),
+        ] {
+            let mut fixture = mock(
+                vec![
+                    tool_body("calculator", json!({"expression":"2+2"}), "calc"),
+                    empty_final_body(),
+                    final_body(),
+                ],
+                StatusCode::OK,
+                success(),
+            )
+            .await;
+            if let Some(key) = key {
+                fixture.gateway.sampling_by_model.insert(
+                    key.into(),
+                    ModelSampling {
+                        temperature: if partial { None } else { Some(0.6) },
+                        top_p: Some(0.95),
+                        presence_penalty: if partial { None } else { Some(0.0) },
+                    },
+                );
+            }
+            let mut request = payload();
+            request["model"] = json!(model);
+            request["temperature"] = json!(0.1);
+            request["top_p"] = json!(0.5);
+            request["max_tokens"] = json!(3210);
+            request["thinking"] = json!({"type":"enabled"});
+            complete(
+                &Client::new(),
+                &format!("{}/chat/completions", fixture.url),
+                "model-secret",
+                request,
+                &fixture.gateway,
+            )
+            .await
+            .unwrap();
+            let requests = fixture.model_requests.lock().unwrap();
+            assert_eq!(requests.len(), 3);
+            for request in requests.iter() {
+                assert_eq!(request["temperature"], if matched && !partial { 0.6 } else { 0.1 });
+                assert_eq!(request["top_p"], if matched { 0.95 } else { 0.5 });
+                assert_eq!(
+                    request.get("presence_penalty").cloned(),
+                    if matched && !partial { Some(json!(0.0)) } else { None }
+                );
+                assert_eq!(request["model"], model);
+                assert_eq!(request["thinking"], json!({"type":"enabled"}));
+                assert_eq!(request["max_tokens"], 3210);
                 assert_eq!(request["response_format"], payload()["response_format"]);
             }
         }
