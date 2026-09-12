@@ -227,7 +227,6 @@ pub(crate) async fn complete(
         payload["messages"][0]["content"] = json!(format!("{system}{}\nНе раскрывайте внутренние трассы или эталон целиком в режиме практики. Сохраняйте учебный режим; результат инструмента сам по себе не является оценкой.", essential_tools_instruction()));
         let mut seen = HashSet::new();
         let mut used = 0;
-        let mut usage = [Some(0_u64); 3];
         let mut traces = Vec::new();
         let mut usage_by_call = Vec::new();
         let mut finalization_continuations = 0;
@@ -241,9 +240,6 @@ pub(crate) async fn complete(
             let mut body = bounded_json(response, MAX_MODEL_BODY_BYTES).await?;
             tracing::info!(%flow_id, round, finalization_continuations, model = %payload["model"], usage = %body["usage"], "Essential tool model completion received");
             usage_by_call.push(body["usage"].clone());
-            for (index, key) in ["prompt_tokens", "completion_tokens", "total_tokens"].iter().enumerate() {
-                usage[index] = usage[index].zip(body["usage"][key].as_u64()).map(|(sum, n)| sum.saturating_add(n));
-            }
             let choice = body["choices"].get(0).context("Missing model choice")?;
             let message = &choice["message"];
             for part in [&body, choice, message] {
@@ -265,7 +261,7 @@ pub(crate) async fn complete(
                     continue;
                 }
                 anyhow::ensure!(!empty, "Missing final model content");
-                body["usage"] = json!({"prompt_tokens":usage[0],"completion_tokens":usage[1],"total_tokens":usage[2]});
+                body["usage"] = aggregate_usage(&usage_by_call);
                 body["_private_tool_metadata"] = json!({"flow_id":flow_id,"traces":traces,"usage":body["usage"],"usage_by_call":usage_by_call,"finalization_continuations":finalization_continuations});
                 tracing::info!(tool_flow = %body["_private_tool_metadata"], "Essential tool flow completed");
                 return Ok(body);
@@ -310,9 +306,44 @@ pub(crate) async fn complete(
     }).await.context("Essential tool flow timed out")?
 }
 
+fn aggregate_usage(calls: &[Value]) -> Value {
+    let total = |path: &str| -> Option<u64> {
+        if calls.is_empty() {
+            return None;
+        }
+        calls.iter().try_fold(0_u64, |sum, call| sum.checked_add(call.pointer(path)?.as_u64()?))
+    };
+    json!({
+        "prompt_tokens": total("/prompt_tokens"),
+        "completion_tokens": total("/completion_tokens"),
+        "total_tokens": total("/total_tokens"),
+        "prompt_tokens_details": {"cached_tokens": total("/prompt_tokens_details/cached_tokens")},
+        "completion_tokens_details": {"reasoning_tokens": total("/completion_tokens_details/reasoning_tokens")}
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn cache_usage_distinguishes_zero_missing_partial_and_overflow() {
+        let first = json!({"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,
+            "prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":10}});
+        let second = json!({"prompt_tokens":200,"completion_tokens":30,"total_tokens":230,
+            "prompt_tokens_details":{"cached_tokens":80},"completion_tokens_details":{"reasoning_tokens":15}});
+        let sum = aggregate_usage(&[first.clone(), second]);
+        assert_eq!(sum["prompt_tokens"], 300);
+        assert_eq!(sum["prompt_tokens_details"]["cached_tokens"], 80);
+        assert_eq!(sum["completion_tokens_details"]["reasoning_tokens"], 25);
+        assert_eq!(aggregate_usage(&[first.clone()])["prompt_tokens_details"]["cached_tokens"], 0);
+        assert!(aggregate_usage(&[first, json!({})])["prompt_tokens_details"]["cached_tokens"]
+            .is_null());
+        assert!(aggregate_usage(&[])["prompt_tokens"].is_null());
+        assert!(aggregate_usage(&[json!({"prompt_tokens":u64::MAX}), json!({"prompt_tokens":1})])
+            ["prompt_tokens"]
+            .is_null());
+    }
     use axum::{
         http::{HeaderMap, StatusCode},
         routing::post,
