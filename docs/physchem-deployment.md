@@ -548,3 +548,62 @@ paid-model test or content publication was performed in this audit. GitHub
 branch-protection settings, external deployment integrations and other hosts
 were not audited. The SSH alias currently disables host-key checking and uses
 `UserKnownHostsFile=/dev/null`; no SSH configuration was changed.
+
+## Essential-tools private bridge follow-up (prepared, not activated)
+
+This section supersedes the earlier proposed loopback port 8180 configuration.
+On the production Docker host an `internal: true` bridge retained the requested
+port binding in HostConfig but installed no published port. A read-only host GET
+to the existing bridge address `http://172.19.0.2:8080/health` succeeded.
+Use the tracked Studio `docker-compose.essential-tools.yml` instead: new network
+`tools-private-v2`, subnet `172.30.80.0/28`, gateway `172.30.80.1`, service static IP
+`172.30.80.2`. No published ports, no host networking for the gateway, no manual
+iptables changes. `internal: true` remains enabled. The local host can reach this
+bridge, so bearer authentication remains mandatory; this is not an air gap.
+
+The subnet did not overlap the audited VPC `10.130.0.0/24` or Docker networks
+`172.17.0.0/16`, `172.18.0.0/16`, `172.19.0.0/16`. Before activation recheck
+`ip -4 route` and every Docker network IPAM configuration. Abort on overlap;
+do not resolve it by disabling isolation. The new network name avoids mutating
+the existing bridge. Recreate only the gateway service on the new bridge after
+the final Git commit/CI gate; do not run a broad Compose `down`.
+
+Previous source root: `/srv/picrete/releases/20260912-physchem-r3`.
+Final tools release target: `/srv/picrete/releases/20260912-tools-r5`.
+Prepare Picrete and Studio-Picrete there via Git at their separately approved
+full SHAs, preserving the private live env values and existing data/task mounts.
+Build and activate using that same root; do not mix candidate source/Compose
+paths with the old r3 checkout. Front remains on its existing UI release.
+Private CSV: `/srv/picrete/shared/essential_skills/reference_db.csv`, UID65532,
+mode0400, read-only bind `/data/reference_db.csv`. SHA256 must equal
+`fb82fd2b7ff2228064883834828c824eadb9adf038c2182e774a1b96fc75b3c2`.
+The CSV is authorized data-only transfer, never Git content, image content or
+public CI artifact. Gateway env: `/srv/picrete/shared/essential_skills/gateway.env`
+(0600), shared token copied privately to both application `.env` files (0600).
+Preserve all other live values and back up env files before mechanical replacement.
+Set `ESSENTIAL_TOOLS_GATEWAY_URL=http://172.30.80.2:8080` in all three private env
+files at the approved deployment, replacing the obsolete loopback URL. Never
+print their content or rendered Compose environment. Set exact final RELEASE_SHA
+separately for each repository/image; do not infer the target from a newer HEAD.
+Picrete Compose now explicitly passes URL/token/max rounds/max calls to API and
+worker. Studio already uses `env_file: .env` and tested unprefixed aliases.
+
+After Git pull/build, successful CI, current backups, and permission to activate:
+
+```sh
+sudo docker compose -p picrete-essential-tools \
+  --env-file /srv/picrete/shared/essential_skills/gateway.env \
+  -f /srv/picrete/releases/20260912-tools-r5/Studio-Picrete/docker-compose.essential-tools.yml \
+  up -d --no-build --pull never --wait essential-tools
+```
+
+Gate application activation on host GET `/health`, unauthenticated POST401,
+authenticated deterministic calculator/reference checks (suppress private record
+values), actual no published ports, read-only root/data, UID65532, dropped caps,
+no-new-privileges, pids32/memory2304MiB/CPU2, and blocked external egress. Verify
+the new static IP and internal network by inspect, not just Compose text.
+Then activate the final API/worker/Studio images using the normal runbook gates;
+compare actual runtime URL/token nonempty/equality as booleans only. Leave Front
+unchanged unless explicitly requested. All role tools flags remain false until
+main authorizes the separate content helper apply; deploying code is not that
+authorization. Do not run paid model probes as deployment health checks.
