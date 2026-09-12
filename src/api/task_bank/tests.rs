@@ -7,6 +7,72 @@ use crate::repositories;
 use crate::test_support;
 
 #[tokio::test]
+async fn dynamic_bank_numbers_do_not_overflow_listing_or_search() {
+    let ctx = test_support::setup_test_context().await;
+    let teacher =
+        test_support::insert_user(ctx.state.db(), "dynamic_teacher", "Teacher", "password").await;
+    let course = test_support::create_course_with_teacher(
+        ctx.state.db(),
+        "dynamic-bank",
+        "Physical chemistry",
+        &teacher.id,
+    )
+    .await;
+    sqlx::query("INSERT INTO task_bank_sources(id,code,title,version) VALUES('dynamic-source','studio_fizicheskaya_himiya_dynamic','Generated','1')")
+        .execute(ctx.state.db()).await.unwrap();
+    sqlx::query(
+        "INSERT INTO course_task_bank_sources(course_id,source_id) VALUES($1,'dynamic-source')",
+    )
+    .bind(&course.id)
+    .execute(ctx.state.db())
+    .await
+    .unwrap();
+    // Include the live format, a number beyond bigint, and ordinary chapter
+    // numbering so a fix cannot silently replace natural ordering with lexical.
+    let numbers = [
+        "2.10",
+        "2.2",
+        "student-5c22316923c9-1-1",
+        "student-999999999999999999999999-1-1",
+        "2.999999999999999999999999",
+    ];
+    for number in numbers {
+        sqlx::query("INSERT INTO task_bank_items(id,source_id,number,paragraph,topic,text,solution,answer,has_answer) VALUES($1,'dynamic-source',$1,'1','Arrhenius','Generated task','Reference solution','42',true)")
+            .bind(number).execute(ctx.state.db()).await.unwrap();
+    }
+    let token = test_support::bearer_token(&teacher.id, ctx.state.settings());
+    let base = format!(
+        "/api/v1/courses/{}/task-bank/items?source=studio_fizicheskaya_himiya_dynamic&limit=100",
+        course.id
+    );
+    for query in ["", "&q=student-5c22316923c9-1-1"] {
+        let response = ctx
+            .app
+            .clone()
+            .oneshot(test_support::json_request(
+                Method::GET,
+                &format!("{base}{query}"),
+                Some(&token),
+                None,
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = test_support::read_json(response).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if query.is_empty() {
+            assert_eq!(body["total_count"], 5);
+            assert_eq!(body["items"][0]["number"], "2.2");
+            assert_eq!(body["items"][1]["number"], "2.10");
+        } else {
+            assert_eq!(body["total_count"], 1);
+            assert_eq!(body["items"][0]["number"], "student-5c22316923c9-1-1");
+            assert_eq!(body["items"][0]["solution"], "Reference solution");
+        }
+    }
+}
+
+#[tokio::test]
 async fn task_bank_answer_authorization_matrix_is_fail_closed() {
     let ctx = test_support::setup_test_context().await;
     let teacher =

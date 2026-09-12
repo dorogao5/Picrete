@@ -325,10 +325,13 @@ pub(crate) async fn list_items(
 
     push_extended_filters(&mut builder, &params.filters, "i.");
 
+    // Generated task numbers contain batch IDs; their extracted digits can
+    // exceed even bigint. Numeric preserves the existing chapter/item ordering
+    // without restricting these IDs to a machine integer.
     builder.push(
         " ORDER BY
-            COALESCE(NULLIF(regexp_replace(split_part(i.number, '.', 1), '[^0-9]', '', 'g'), '')::int, 2147483647),
-            COALESCE(NULLIF(regexp_replace(split_part(i.number, '.', 2), '[^0-9]', '', 'g'), '')::int, 2147483647),
+            COALESCE(NULLIF(regexp_replace(split_part(i.number, '.', 1), '[^0-9]', '', 'g'), '')::numeric, 2147483647),
+            COALESCE(NULLIF(regexp_replace(split_part(i.number, '.', 2), '[^0-9]', '', 'g'), '')::numeric, 2147483647),
             i.number",
     );
     builder.push(" OFFSET ");
