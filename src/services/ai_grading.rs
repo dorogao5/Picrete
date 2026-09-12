@@ -760,17 +760,20 @@ mod contract_tests {
 
     #[tokio::test]
     async fn tool_enabled_grader_preserves_schema_validates_final_and_hides_traces() {
-        use crate::services::essential_tools::tests::{mock, success, tool_body};
-        for valid in [true, false] {
+        use crate::services::essential_tools::tests::{empty_final_body, mock, success, tool_body};
+        for (valid, finish_empty) in [(true, false), (false, false), (true, true), (false, true)] {
             let rating = if valid {
                 json!({"unreadable":false,"needs_teacher_review":false,
                 "total_score":5,"max_score":5,"criteria_scores":[{"criterion_name":"Метод","score":5,"max_score":5,"comment":"Верно"}],"feedback":"Верно"})
             } else {
                 json!({})
             };
-            let fixture = mock(vec![tool_body("calculator", json!({"expression":"2+2"}), "calc"),
-                json!({"choices":[{"finish_reason":"stop","message":{"content":rating.to_string()}}],"usage":{"total_tokens":7}})],
-                axum::http::StatusCode::OK, success()).await;
+            let mut responses = vec![tool_body("calculator", json!({"expression":"2+2"}), "calc")];
+            if finish_empty {
+                responses.push(empty_final_body());
+            }
+            responses.push(json!({"choices":[{"finish_reason":"stop","message":{"content":rating.to_string()}}],"usage":{"total_tokens":7}}));
+            let fixture = mock(responses, axum::http::StatusCode::OK, success()).await;
             let service = AiGradingService {
                 client: Client::new(),
                 api_key: "model-secret".into(),
@@ -798,16 +801,17 @@ mod contract_tests {
             if valid {
                 let result = result.unwrap();
                 assert_eq!(result["total_score"], 5);
-                assert_eq!(result["_metadata"]["tokens_used"], 30);
+                assert_eq!(result["_metadata"]["tokens_used"], if finish_empty { 42 } else { 30 });
                 assert!(!result.to_string().contains("trace-1"));
                 assert!(result.get("_private_tool_metadata").is_none());
             } else {
                 assert!(result.unwrap_err().to_string().contains("Missing total_score"));
             }
             let requests = fixture.model_requests.lock().unwrap();
-            assert_eq!(requests.len(), 2);
+            assert_eq!(requests.len(), if finish_empty { 3 } else { 2 });
             assert_eq!(requests[0]["response_format"]["type"], "json_schema");
-            assert_eq!(requests[0]["response_format"], requests[1]["response_format"]);
+            assert_eq!(requests[0]["response_format"], requests.last().unwrap()["response_format"]);
+            assert_eq!(fixture.tool_requests.lock().unwrap().len(), 1);
         }
     }
     #[test]

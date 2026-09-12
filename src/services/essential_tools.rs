@@ -7,6 +7,13 @@ use std::{collections::HashSet, time::Duration};
 use crate::core::config::Settings;
 
 const MAX_BODY_BYTES: usize = 256 * 1024;
+const TOOL_FINALIZATION_PROMPT: &str = concat!(
+    "Предыдущий ответ завершился без итогового текста. Завершите ответ для этой же ",
+    "задачи в ранее заданном формате, используя уже полученные результаты инструментов. ",
+    "Не меняйте выбранные исходные данные и вопросы, не создавайте другую задачу, ",
+    "не повторяйте расчёты и не приписывайте невыполненных проверок. ",
+    "Сохраните учебный режим: для подсказки отвечайте только на текущий шаг."
+);
 
 // Mirrored from Studio services/contracts.py ESSENTIAL_TOOLS_INSTRUCTION.
 // The text file's final LF is formatting, not part of the shared prompt.
@@ -184,7 +191,8 @@ fn validate_arguments(name: &str, arguments: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Each completion is called once. Continuations are only for actual tool results;
+/// Each completion is called once. An empty final after successful tools may
+/// receive one same-context, tools-disabled finalization continuation.
 /// Argument/computation errors can be corrected in this same conversation;
 /// transport errors, timeouts and exhaustion never trigger retries.
 pub(crate) async fn complete(
@@ -203,13 +211,18 @@ pub(crate) async fn complete(
         let mut used = 0;
         let mut usage = [Some(0_u64); 3];
         let mut traces = Vec::new();
+        let mut usage_by_call = Vec::new();
+        let mut finalization_continuations = 0;
         let flow_id = uuid::Uuid::new_v4().to_string();
-        for round in 0..=gateway.max_rounds {
+        // The extra slot is exclusively for finalizing an empty stop response;
+        // normal tool rounds retain their existing limit below.
+        for round in 0..=gateway.max_rounds + 1 {
             let response = client.post(url).bearer_auth(api_key).json(&payload).send().await
                 .context("Tool-enabled model request failed")?;
             anyhow::ensure!(response.status().is_success(), "Tool-enabled model returned HTTP {}", response.status());
             let mut body = bounded_json(response).await?;
-            tracing::info!(%flow_id, round, model = %payload["model"], usage = %body["usage"], "Essential tool model completion received");
+            tracing::info!(%flow_id, round, finalization_continuations, model = %payload["model"], usage = %body["usage"], "Essential tool model completion received");
+            usage_by_call.push(body["usage"].clone());
             for (index, key) in ["prompt_tokens", "completion_tokens", "total_tokens"].iter().enumerate() {
                 usage[index] = usage[index].zip(body["usage"][key].as_u64()).map(|(sum, n)| sum.saturating_add(n));
             }
@@ -220,12 +233,25 @@ pub(crate) async fn complete(
             }
             if choice["finish_reason"] == "stop" {
                 anyhow::ensure!(message["tool_calls"].is_null() || message["tool_calls"].as_array().is_some_and(Vec::is_empty), "Unexpected final tool calls");
-                anyhow::ensure!(message["content"].as_str().is_some_and(|v| !v.trim().is_empty()), "Missing final model content");
+                let empty = match message.get("content") {
+                    None | Some(Value::Null) => true,
+                    Some(Value::String(content)) => content.trim().is_empty(),
+                    _ => anyhow::bail!("Invalid final model content type"),
+                };
+                if empty && finalization_continuations == 0 && traces.iter().any(|trace: &Value| trace["status"] == "success") {
+                    finalization_continuations = 1;
+                    payload["tool_choice"] = json!("none");
+                    payload["messages"].as_array_mut().unwrap().push(json!({"role":"user","content":TOOL_FINALIZATION_PROMPT}));
+                    tracing::info!(%flow_id, finalization_continuations, usage_by_call = %json!(usage_by_call), "Finalizing empty answer from existing tool results");
+                    continue;
+                }
+                anyhow::ensure!(!empty, "Missing final model content");
                 body["usage"] = json!({"prompt_tokens":usage[0],"completion_tokens":usage[1],"total_tokens":usage[2]});
-                body["_private_tool_metadata"] = json!({"flow_id":flow_id,"traces":traces,"usage":body["usage"]});
+                body["_private_tool_metadata"] = json!({"flow_id":flow_id,"traces":traces,"usage":body["usage"],"usage_by_call":usage_by_call,"finalization_continuations":finalization_continuations});
                 tracing::info!(tool_flow = %body["_private_tool_metadata"], "Essential tool flow completed");
                 return Ok(body);
             }
+            anyhow::ensure!(finalization_continuations == 0, "Unexpected non-final completion during finalization; tools not executed");
             anyhow::ensure!(choice["finish_reason"] == "tool_calls", "Tool-enabled model did not finish with stop or tool_calls");
             anyhow::ensure!(round < gateway.max_rounds, "Essential tool round limit exceeded");
             let calls = message["tool_calls"].as_array().filter(|v| !v.is_empty()).context("Missing tool calls")?;
@@ -322,12 +348,30 @@ pub(crate) mod tests {
                 post(move |headers: HeaderMap, Json(body): Json<Value>| {
                     assert_eq!(headers["authorization"], "Bearer model-secret");
                     let mut requests = seen_model.lock().unwrap();
-                    let response = responses
+                    let mut response = responses
                         .get(requests.len())
                         .cloned()
                         .unwrap_or(json!({"error":"Unexpected extra request"}));
                     requests.push(body);
-                    async move { Json(response) }
+                    let status = response
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("_http_status")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| StatusCode::from_u16(v as u16).unwrap())
+                        .unwrap_or(StatusCode::OK);
+                    let delay = response
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("_delay_ms")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    async move {
+                        if delay > 0 {
+                            tokio::time::sleep(Duration::from_millis(delay)).await;
+                        }
+                        (status, Json(response))
+                    }
                 }),
             )
             .route(
@@ -365,6 +409,11 @@ pub(crate) mod tests {
 
     fn final_body() -> Value {
         json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"{\"total_score\":5}"}}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}})
+    }
+    pub(crate) fn empty_final_body() -> Value {
+        let mut body = final_body();
+        body["choices"][0]["message"]["content"] = json!("  ");
+        body
     }
     pub(crate) fn tool_body(name: &str, arguments: Value, id: &str) -> Value {
         json!({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":id,"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}})
@@ -430,6 +479,122 @@ pub(crate) mod tests {
         assert!(run(&mock).await.is_ok());
         assert_eq!(mock.model_requests.lock().unwrap().len(), 1);
         assert!(mock.tool_requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_final_after_success_gets_one_same_context_finisher_with_usage() {
+        let mut fixture = mock(
+            vec![
+                tool_body("calculator", json!({"expression":"2+2"}), "calc"),
+                empty_final_body(),
+                final_body(),
+            ],
+            StatusCode::OK,
+            success(),
+        )
+        .await;
+        fixture.gateway.max_rounds = 1; // A finisher also works at the normal round boundary.
+        let result = run(&fixture).await.unwrap();
+        assert_eq!(result["usage"]["total_tokens"], 47);
+        assert_eq!(result["_private_tool_metadata"]["finalization_continuations"], 1);
+        assert_eq!(
+            result["_private_tool_metadata"]["usage_by_call"],
+            json!([{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}, empty_final_body()["usage"], final_body()["usage"]])
+        );
+        let requests = fixture.model_requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(fixture.tool_requests.lock().unwrap().len(), 1);
+        let previous = requests[1]["messages"].as_array().unwrap();
+        let finishing = requests[2]["messages"].as_array().unwrap();
+        assert_eq!(&finishing[..previous.len()], previous.as_slice());
+        assert_eq!(finishing.len(), previous.len() + 1);
+        assert_eq!(
+            finishing.last().unwrap(),
+            &json!({"role":"user","content":TOOL_FINALIZATION_PROMPT})
+        );
+        assert_eq!(requests[2]["tool_choice"], "none");
+        for key in ["model", "tools", "response_format"] {
+            assert_eq!(requests[2][key], requests[1][key]);
+        }
+        assert!(!result["choices"].to_string().contains("finalization_continuations"));
+    }
+
+    #[tokio::test]
+    async fn finisher_never_repeats_or_executes_more_tools() {
+        let mut refused = empty_final_body();
+        refused["choices"][0]["message"]["refusal"] = json!("No");
+        let mut http_error = empty_final_body();
+        http_error["_http_status"] = json!(503);
+        for final_response in [
+            empty_final_body(),
+            tool_body("calculator", json!({"expression":"3+3"}), "extra"),
+            refused,
+            http_error,
+        ] {
+            let fixture = mock(
+                vec![
+                    tool_body("calculator", json!({"expression":"2+2"}), "calc"),
+                    empty_final_body(),
+                    final_response,
+                ],
+                StatusCode::OK,
+                success(),
+            )
+            .await;
+            assert!(run(&fixture).await.is_err());
+            assert_eq!(fixture.model_requests.lock().unwrap().len(), 3);
+            assert_eq!(fixture.tool_requests.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_initial_errors_and_unsuccessful_tools_do_not_get_finisher() {
+        let fixture = mock(vec![empty_final_body()], StatusCode::OK, success()).await;
+        assert!(run(&fixture).await.is_err());
+        assert_eq!(fixture.model_requests.lock().unwrap().len(), 1);
+        for failure in ["refusal", "http", "tool_error"] {
+            let mut empty = empty_final_body();
+            let mut tool = success();
+            match failure {
+                "refusal" => empty["choices"][0]["message"]["refusal"] = json!("No"),
+                "http" => empty["_http_status"] = json!(503),
+                _ => {
+                    tool["status"] = json!("error");
+                    tool["error"] = json!("Bad expression");
+                }
+            }
+            let fixture = mock(
+                vec![tool_body("calculator", json!({"expression":"2+2"}), "calc"), empty],
+                StatusCode::OK,
+                tool,
+            )
+            .await;
+            assert!(run(&fixture).await.is_err());
+            assert_eq!(fixture.model_requests.lock().unwrap().len(), 2);
+            assert_eq!(fixture.tool_requests.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn finisher_uses_remaining_original_deadline() {
+        let mut empty = empty_final_body();
+        empty["_delay_ms"] = json!(100);
+        let mut final_response = final_body();
+        final_response["_delay_ms"] = json!(150);
+        let mut fixture = mock(
+            vec![
+                tool_body("calculator", json!({"expression":"2+2"}), "calc"),
+                empty,
+                final_response,
+            ],
+            StatusCode::OK,
+            success(),
+        )
+        .await;
+        fixture.gateway.flow_timeout = Duration::from_millis(200);
+        assert!(run(&fixture).await.unwrap_err().to_string().contains("timed out"));
+        assert_eq!(fixture.model_requests.lock().unwrap().len(), 3);
+        assert_eq!(fixture.tool_requests.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -651,8 +816,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn whole_flow_deadline_cancels_without_retry() {
-        let mut fixture = mock(vec![final_body()], StatusCode::OK, success()).await;
-        fixture.gateway.flow_timeout = Duration::ZERO;
+        let mut response = final_body();
+        response["_delay_ms"] = json!(100);
+        let mut fixture = mock(vec![response], StatusCode::OK, success()).await;
+        fixture.gateway.flow_timeout = Duration::from_millis(20);
         assert!(run(&fixture).await.unwrap_err().to_string().contains("timed out"));
         assert!(fixture.model_requests.lock().unwrap().len() <= 1);
         assert!(fixture.tool_requests.lock().unwrap().is_empty());

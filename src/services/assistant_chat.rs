@@ -571,10 +571,10 @@ mod tests {
 
     #[tokio::test]
     async fn tutor_tools_are_role_scoped_and_return_only_final_text() {
-        use crate::services::essential_tools::tests::{mock, success, tool_body};
-        for enabled in [false, true] {
+        use crate::services::essential_tools::tests::{empty_final_body, mock, success, tool_body};
+        for (enabled, finish_empty) in [(false, false), (true, false), (true, true)] {
             let final_response = serde_json::json!({"choices":[{"finish_reason":"stop","message":{"content":"Начните с записи исходных данных."}}]});
-            let responses = if enabled {
+            let mut responses = if enabled {
                 vec![
                     tool_body("calculator", serde_json::json!({"expression":"2+2"}), "calc"),
                     final_response,
@@ -582,6 +582,9 @@ mod tests {
             } else {
                 vec![final_response]
             };
+            if finish_empty {
+                responses.insert(1, empty_final_body());
+            }
             let fixture = mock(responses, axum::http::StatusCode::OK, success()).await;
             let service = super::AssistantChatService {
                 client: reqwest::Client::new(),
@@ -604,7 +607,17 @@ mod tests {
                 .unwrap();
             assert_eq!(answer, "Начните с записи исходных данных.");
             let requests = fixture.model_requests.lock().unwrap();
-            assert_eq!(requests.len(), if enabled { 2 } else { 1 });
+            assert_eq!(
+                requests.len(),
+                if finish_empty {
+                    3
+                } else if enabled {
+                    2
+                } else {
+                    1
+                }
+            );
+            assert_eq!(requests[0]["messages"][0], requests.last().unwrap()["messages"][0]);
             assert_eq!(requests[0].get("tools").is_some(), enabled);
             assert!(requests[0]["messages"][0]["content"]
                 .as_str()
