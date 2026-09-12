@@ -11,6 +11,8 @@ pub(crate) struct PublishedRuntimePolicy {
     #[serde(default)]
     pub(crate) policy_version: String,
     #[serde(default)]
+    pub(crate) generation_policy: String,
+    #[serde(default)]
     pub(crate) tutor_model_id: String,
     #[serde(default)]
     pub(crate) decision_model_id: String,
@@ -32,7 +34,8 @@ pub(crate) struct PublishedRuntimePolicy {
 
 impl PublishedRuntimePolicy {
     pub(crate) fn is_legacy(&self) -> bool {
-        self.policy_version.trim().is_empty()
+        self.generation_policy.trim().is_empty()
+            && self.policy_version.trim().is_empty()
             && self.tutor_model_id.trim().is_empty()
             && self.decision_model_id.trim().is_empty()
             && self.tutor_provider_kind.trim().is_empty()
@@ -271,8 +274,8 @@ fn build_system_prompt(prompt: &str, profile: &str, reference: &str) -> String {
         "{prompt}\n\n{profile}\n\nКОНТЕКСТ СЕССИИ\n\
          Это свободный диалог по курсу: платформа не передала назначенную или оцениваемую задачу. \
          Не утверждайте, что студент уже показал верный фрагмент решения, если в его сообщении нет попытки. \
-         На самостоятельный расчётный вопрос дайте полный объяснённый разбор и итоговый ответ. \
-         Режим проверки с поэтапной подсказкой используйте, только когда студент явно просит проверить свою попытку. \
+         На расчётный вопрос, даже просьбу дать готовый ответ, предложите один посильный шаг и один наводящий вопрос; дождитесь попытки студента. Не раскрывайте итоговый ответ или полное решение. \
+         Объясняйте определения прямо и кратко. Подтверждайте верные шаги, которые студент уже показал. Полный разбор доступен отдельным действием платформы, просьба в чате его не включает. \
          Предметные ограничения исходного промпта, включая безопасность реальной лабораторной работы, сохраняют приоритет.\n\n\
          Отвечайте по-русски, если студент не попросил иначе. Не выдумывайте факты вне материалов. \
          Помогайте понять ход решения и не подменяйте объяснение одним готовым ответом.\n\n\
@@ -521,7 +524,8 @@ mod tests {
 
         assert!(system.contains("Это свободный диалог по курсу"));
         assert!(system.contains("платформа не передала назначенную или оцениваемую задачу"));
-        assert!(system.contains("полный объяснённый разбор и итоговый ответ"));
+        assert!(system.contains("один наводящий вопрос"));
+        assert!(!system.contains("дайте полный объяснённый разбор"));
         assert!(system.contains("безопасность реальной лабораторной работы"));
     }
 
@@ -557,6 +561,7 @@ mod tests {
     fn runtime_policy_accepts_matching_decision_model() {
         let policy = PublishedRuntimePolicy {
             policy_version: "model-use-v1:test".to_string(),
+            generation_policy: String::new(),
             tutor_model_id: "deepseek-v4-pro".to_string(),
             decision_model_id: "deepseek-v4-pro".to_string(),
             tutor_provider_kind: String::new(),
@@ -575,6 +580,7 @@ mod tests {
     fn runtime_policy_rejects_silent_model_mismatch() {
         let policy = PublishedRuntimePolicy {
             policy_version: "model-use-v1:test".to_string(),
+            generation_policy: String::new(),
             tutor_model_id: "deepseek-v4-pro".to_string(),
             decision_model_id: "deepseek-v4-pro".to_string(),
             tutor_provider_kind: String::new(),

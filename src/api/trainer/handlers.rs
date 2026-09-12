@@ -59,7 +59,9 @@ pub(super) async fn generate_set(
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let source = resolve_source(state.db(), &course_id, &payload.source).await?;
-    if source.code == repositories::trainer_sets::PHYSICAL_CHEMISTRY_SOURCE
+    let studio_generation = repositories::trainer_sets::uses_studio_generation(state.db(), &course_id, &source.code)
+        .await.map_err(|e| ApiError::internal(e, "Не удалось загрузить политику генерации"))?;
+    if studio_generation
         && !access.roles.contains(&CourseRole::Teacher)
     {
         require_generation_unlock(
@@ -73,8 +75,8 @@ pub(super) async fn generate_set(
         )
         .await?;
     }
-    if source.code == repositories::trainer_sets::PHYSICAL_CHEMISTRY_SOURCE {
-        return generate_physical_chemistry_set(
+    if studio_generation {
+        return generate_studio_set(
             &state,
             &course_id,
             &user.id,
@@ -232,7 +234,7 @@ async fn require_generation_unlock(
     Ok(())
 }
 
-async fn generate_physical_chemistry_set(
+async fn generate_studio_set(
     state: &AppState,
     course_id: &str,
     student_id: &str,
@@ -247,14 +249,14 @@ async fn generate_physical_chemistry_set(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-        ApiError::BadRequest("Для генерации выберите подтему физической химии".into())
+        ApiError::BadRequest("Для генерации выберите подтему курса".into())
     })?;
     let difficulty = payload.filters.difficulty.as_deref().unwrap_or("easy").trim().to_string();
     let assistant = repositories::course_ai_assistants::find(state.db(), course_id)
         .await
         .map_err(|e| ApiError::internal(e, "Не удалось загрузить ассистента курса"))?
         .ok_or_else(|| {
-            ApiError::UnprocessableEntity("Ассистент физической химии ещё не опубликован".into())
+            ApiError::UnprocessableEntity("Ассистент курса ещё не опубликован".into())
         })?;
     let settings = state.settings().studio_integration();
     if settings.api_url.trim().is_empty() || settings.token.trim().is_empty() {

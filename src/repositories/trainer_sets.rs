@@ -6,6 +6,13 @@ use crate::db::models::TrainerSet;
 
 pub(crate) const PHYSICAL_CHEMISTRY_SOURCE: &str = "studio_fizicheskaya_himiya";
 
+pub(crate) async fn uses_studio_generation(pool: &PgPool, course_id: &str, source: &str) -> Result<bool, sqlx::Error> {
+    if source == PHYSICAL_CHEMISTRY_SOURCE { return Ok(true); }
+    let assistant = super::course_ai_assistants::find(pool, course_id).await?;
+    Ok(assistant.is_some_and(|a| a.enabled &&
+        a.snapshot.pointer("/assistant/runtime_policy/generation_policy").and_then(serde_json::Value::as_str) == Some("single_verifier")))
+}
+
 // Deliberately independent of release and difficulty: republishing and changing
 // levels must not erase an earned unlock or count the same task twice.
 pub(crate) async fn generation_solved_count(
@@ -20,13 +27,16 @@ pub(crate) async fn generation_solved_count(
          JOIN task_bank_items i ON i.id=a.task_id
          JOIN task_bank_sources s ON s.id=i.source_id
          WHERE a.course_id=$1 AND a.student_id=$2 AND a.trainer_id=$3
-           AND a.section_id=$4 AND a.solved AND NOT a.preview AND s.code=$5",
+           AND a.section_id=$4 AND a.solved AND NOT a.preview
+           AND EXISTS (SELECT 1 FROM course_trainers t,
+             LATERAL jsonb_array_elements(t.published->'sections') sec,
+             LATERAL jsonb_array_elements(sec->'items') item
+             WHERE t.id=$3 AND t.course_id=$1 AND sec->>'id'=$4 AND item->>'task_id'=a.task_id)",
     )
     .bind(course_id)
     .bind(student_id)
     .bind(trainer_id)
     .bind(section_id)
-    .bind(PHYSICAL_CHEMISTRY_SOURCE)
     .fetch_one(pool)
     .await
 }

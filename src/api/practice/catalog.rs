@@ -104,7 +104,8 @@ pub(super) async fn list(
         let source = trainer_source(&state, &course, &def).await?;
         let mut generation_unlock = serde_json::Map::new();
         let mut generation_progress = serde_json::Map::new();
-        if source == repositories::trainer_sets::PHYSICAL_CHEMISTRY_SOURCE {
+        let studio_generation = repositories::trainer_sets::uses_studio_generation(state.db(), &course, &source).await.map_err(db)?;
+        if studio_generation {
             for section in def["sections"].as_array().into_iter().flatten() {
                 if let Some(section_id) = section["id"].as_str() {
                     let unlocked = if access.roles.contains(&CourseRole::Teacher) {
@@ -127,7 +128,7 @@ pub(super) async fn list(
                 }
             }
         }
-        let mut item = json!({"id":id,"definition":def,"source":source,"published":r.get::<Option<Value>,_>("published").is_some(),"release_id":release,"revision":r.get::<i32,_>("revision"),"progress":progress,"generation_unlock":generation_unlock});
+        let mut item = json!({"id":id,"definition":def,"source":source,"published":r.get::<Option<Value>,_>("published").is_some(),"release_id":release,"revision":r.get::<i32,_>("revision"),"progress":progress,"generation_unlock":generation_unlock,"studio_generation":studio_generation});
         if !generation_progress.is_empty() {
             item["generation_progress"] = json!(generation_progress);
         }
