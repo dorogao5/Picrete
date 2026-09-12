@@ -120,6 +120,12 @@ impl AssistantChatService {
             route.base_url.clone(),
             policy.tutor_model_id.clone(),
         )
+        .map(|mut service| {
+            if provider_uses_full_model_uri(&policy.tutor_provider_kind) {
+                service.request_model = policy.tutor_model_id.clone();
+            }
+            service
+        })
     }
 
     fn from_route(
@@ -313,6 +319,10 @@ pub(crate) fn api_model_name(model: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+pub(crate) fn provider_uses_full_model_uri(provider_kind: &str) -> bool {
+    provider_kind.trim().eq_ignore_ascii_case("yandex")
 }
 
 pub(crate) fn select_reference_sheets(snapshot: &Value, query: &str, max_chars: usize) -> String {

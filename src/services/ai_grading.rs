@@ -125,7 +125,10 @@ impl AiGradingService {
                     })?;
                 (route.api_key.clone(), route.base_url.clone())
             };
-        let mut service = Self::from_route(settings, api_key, base_url, model)?;
+        let mut service = Self::from_route(settings, api_key, base_url, model.clone())?;
+        if super::assistant_chat::provider_uses_full_model_uri(&policy.decision_provider_kind) {
+            service.model = model;
+        }
         service.client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(110))
