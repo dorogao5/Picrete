@@ -175,18 +175,31 @@ async fn physical_generation_unlock_is_distinct_scoped_and_survives_republish() 
     }
     // Repeated solves (including different levels/releases), previews and
     // unsolved attempts do not add distinct solved tasks to this section.
-    for (task, level, preview, solved, sec) in [
+    let catalog = request(&ctx, &student, Method::GET, &path, None).await.1;
+    assert_eq!(catalog["generation_progress"][&section], json!({"solved":0,"required":3}));
+    let teacher_catalog = request(&ctx, &teacher, Method::GET, &path, None).await.1;
+    assert_eq!(teacher_catalog["generation_unlock"][&section], true);
+    assert!(teacher_catalog.get("generation_progress").is_none());
+    for (index, (task, level, preview, solved, sec)) in [
         ("task-easy", "easy", false, true, section.as_str()),
         ("task-easy", "hard", false, true, section.as_str()),
         ("task-hard", "hard", false, true, section.as_str()),
         ("task-third", "medium", true, true, section.as_str()),
         ("task-third", "medium", false, false, section.as_str()),
         ("task-third", "medium", false, true, other_section.as_str()),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         sqlx::query("INSERT INTO practice_attempts(id,course_id,student_id,trainer_id,release_id,section_id,difficulty,task_id,task,snapshot,title,preview,solved,helped) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'{}','{}','Test',$9,$10,true)")
             .bind(Uuid::new_v4().to_string()).bind(&course).bind(&student_id).bind(id)
             .bind(Uuid::new_v4().to_string()).bind(sec).bind(level).bind(task).bind(preview).bind(solved)
             .execute(ctx.state.db()).await.unwrap();
+        let catalog = request(&ctx, &student, Method::GET, &path, None).await.1;
+        assert_eq!(
+            catalog["generation_progress"][&section],
+            json!({"solved":if index < 2 { 1 } else { 2 },"required":3})
+        );
     }
     assert_eq!(
         crate::repositories::trainer_sets::generation_solved_count(
@@ -220,10 +233,9 @@ async fn physical_generation_unlock_is_distinct_scoped_and_survives_republish() 
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     sqlx::query("UPDATE practice_attempts SET solved=true WHERE trainer_id=$1 AND section_id=$2 AND task_id='task-third' AND NOT preview").bind(id).bind(&section).execute(ctx.state.db()).await.unwrap();
-    assert_eq!(
-        request(&ctx, &student, Method::GET, &path, None).await.1["generation_unlock"][&section],
-        true
-    );
+    let catalog = request(&ctx, &student, Method::GET, &path, None).await.1;
+    assert_eq!(catalog["generation_unlock"][&section], true);
+    assert_eq!(catalog["generation_progress"][&section], json!({"solved":3,"required":3}));
     // An unlocked section cannot pay for another topic, section or trainer.
     for (field, value) in [("section_id", other_section.as_str()), ("trainer_id", "unknown")] {
         let mut invalid = payload.clone();
@@ -273,6 +285,8 @@ async fn physical_generation_unlock_is_distinct_scoped_and_survives_republish() 
     let catalog = request(&ctx, &student, Method::GET, &path, None).await.1;
     assert_eq!(catalog["generation_unlock"][&section], true);
     assert_eq!(catalog["generation_unlock"][&other_section], false);
+    assert_eq!(catalog["generation_progress"][&section], json!({"solved":3,"required":3}));
+    assert_eq!(catalog["generation_progress"][&other_section], json!({"solved":1,"required":3}));
     assert_eq!(
         request(&ctx, &student, Method::POST, &endpoint, Some(payload.clone())).await.0,
         StatusCode::SERVICE_UNAVAILABLE

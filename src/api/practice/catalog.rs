@@ -103,13 +103,14 @@ pub(super) async fn list(
         let progress = progress(&state, &course, &user.id, &id, release.as_deref()).await?;
         let source = trainer_source(&state, &course, &def).await?;
         let mut generation_unlock = serde_json::Map::new();
+        let mut generation_progress = serde_json::Map::new();
         if source == repositories::trainer_sets::PHYSICAL_CHEMISTRY_SOURCE {
             for section in def["sections"].as_array().into_iter().flatten() {
                 if let Some(section_id) = section["id"].as_str() {
                     let unlocked = if access.roles.contains(&CourseRole::Teacher) {
                         true
                     } else {
-                        repositories::trainer_sets::generation_solved_count(
+                        let solved = repositories::trainer_sets::generation_solved_count(
                             state.db(),
                             &course,
                             &user.id,
@@ -117,14 +118,20 @@ pub(super) async fn list(
                             section_id,
                         )
                         .await
-                        .map_err(db)?
-                            >= 3
+                        .map_err(db)?;
+                        generation_progress
+                            .insert(section_id.to_owned(), json!({"solved":solved,"required":3}));
+                        solved >= 3
                     };
                     generation_unlock.insert(section_id.to_owned(), json!(unlocked));
                 }
             }
         }
-        items.push(json!({"id":id,"definition":def,"source":source,"published":r.get::<Option<Value>,_>("published").is_some(),"release_id":release,"revision":r.get::<i32,_>("revision"),"progress":progress,"generation_unlock":generation_unlock}));
+        let mut item = json!({"id":id,"definition":def,"source":source,"published":r.get::<Option<Value>,_>("published").is_some(),"release_id":release,"revision":r.get::<i32,_>("revision"),"progress":progress,"generation_unlock":generation_unlock});
+        if !generation_progress.is_empty() {
+            item["generation_progress"] = json!(generation_progress);
+        }
+        items.push(item);
     }
     Ok(Json(json!({"items":items})))
 }
