@@ -237,7 +237,13 @@ pub(crate) async fn complete(
                     .and_then(|arguments| { validate_arguments(name, &arguments)?; Ok(arguments) });
                 validated.push((id.to_owned(), name.to_owned(), arguments));
             }
-            payload["messages"].as_array_mut().unwrap().push(message.clone());
+            let mut continuation = message.clone();
+            if is_qwen_model(payload["model"].as_str().unwrap_or_default()) {
+                // Qwen replays tool reasoning when echoed; preserve all other
+                // fields and leave DeepSeek's required reasoning continuation intact.
+                continuation.as_object_mut().unwrap().remove("reasoning_content");
+            }
+            payload["messages"].as_array_mut().unwrap().push(continuation);
             for (id, name, arguments) in validated {
                 let result = match arguments {
                     Ok(arguments) => gateway.invoke(&name, &arguments).await?,
@@ -255,6 +261,18 @@ pub(crate) async fn complete(
         }
         anyhow::bail!("Missing final tool-enabled completion")
     }).await.context("Essential tool flow timed out")?
+}
+
+// Compatibility only: this never selects or changes the configured model route.
+fn is_qwen_model(model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
+    let name = if let Some(uri) = model.strip_prefix("gpt://") {
+        // Yandex: gpt://folder/model[/version].
+        uri.split('/').nth(1).unwrap_or_default()
+    } else {
+        model.rsplit('/').next().unwrap_or_default()
+    };
+    name.starts_with("qwen")
 }
 
 #[cfg(test)]
@@ -402,6 +420,62 @@ pub(crate) mod tests {
         assert!(run(&mock).await.is_ok());
         assert_eq!(mock.model_requests.lock().unwrap().len(), 1);
         assert!(mock.tool_requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn qwen_omits_only_replayed_reasoning_deepseek_keeps_it() {
+        for (model, strip_reasoning) in [
+            ("qwen3-235b", true),
+            ("Qwen/Qwen3.5-2B", true),
+            ("gpt://folder/qwen3-235b/latest", true),
+            ("gpt://folder/qwen3-235b", true),
+            ("deepseek-v4-pro", false),
+            ("gpt://qwen-folder/deepseek-v4-pro/latest", false),
+            ("other-qwen-model", false),
+        ] {
+            let mut call = tool_body("calculator", json!({"expression":"2+2"}), "calc");
+            call["choices"][0]["message"]["reasoning_content"] = json!("Internal tool reasoning");
+            let mut final_response = final_body();
+            final_response["choices"][0]["message"]["reasoning_content"] =
+                json!("Final reasoning unchanged");
+            let fixture =
+                mock(vec![call.clone(), final_response.clone()], StatusCode::OK, success()).await;
+            let mut request = payload();
+            request["model"] = json!(model);
+            request["thinking"] = json!({"type":"enabled"});
+            let result = complete(
+                &Client::new(),
+                &format!("{}/chat/completions", fixture.url),
+                "model-secret",
+                request,
+                &fixture.gateway,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result["choices"], final_response["choices"]);
+            let requests = fixture.model_requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(fixture.tool_requests.lock().unwrap().len(), 1);
+            let mut expected = call["choices"][0]["message"].clone();
+            if strip_reasoning {
+                expected.as_object_mut().unwrap().remove("reasoning_content");
+            }
+            assert_eq!(requests[1]["messages"][2], expected, "{model}");
+            let tool_result: Value =
+                serde_json::from_str(requests[1]["messages"][3]["content"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(tool_result["normalized_result"], success()["normalized_result"]);
+            assert_eq!(tool_result["trace_id"], "trace-1");
+            let mut first = requests[0].clone();
+            let mut second = requests[1].clone();
+            first.as_object_mut().unwrap().remove("messages");
+            second.as_object_mut().unwrap().remove("messages");
+            assert_eq!(first, second);
+            assert_eq!(second["model"], model);
+            assert_eq!(second["thinking"], json!({"type":"enabled"}));
+            assert_eq!(second["tool_choice"], "auto");
+            assert_eq!(second["response_format"], payload()["response_format"]);
+        }
     }
 
     #[tokio::test]
