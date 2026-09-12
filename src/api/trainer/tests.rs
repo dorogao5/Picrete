@@ -19,6 +19,81 @@ fn generated_set_accepts_only_nonempty_bounded_verified_subset() {
 }
 
 #[tokio::test]
+async fn physical_generation_without_studio_config_never_falls_back_to_bank() {
+    let mut ctx = test_support::setup_test_context().await;
+    let admin = test_support::insert_platform_admin(
+        ctx.state.db(),
+        "studio_config_admin",
+        "Config test",
+        "test-password",
+    )
+    .await;
+    let course = test_support::create_course_with_teacher(
+        ctx.state.db(),
+        "studio-config-course",
+        "Physical chemistry",
+        &admin.id,
+    )
+    .await;
+    // Admin bypasses the unlock gate, isolating the missing-config failure.
+    // A matching ready bank item makes the old fallback return 201, not 422.
+    sqlx::query("INSERT INTO task_bank_sources(id,code,title,version) VALUES('config-bank','studio_fizicheskaya_himiya','Physical','1')")
+        .execute(ctx.state.db()).await.unwrap();
+    sqlx::query(
+        "INSERT INTO course_task_bank_sources(course_id,source_id) VALUES($1,'config-bank')",
+    )
+    .bind(&course.id)
+    .execute(ctx.state.db())
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO task_bank_items(id,source_id,number,paragraph,topic,text,answer,has_answer,solution,difficulty) VALUES('config-task','config-bank','1','1','Кинетика','Ready task','42',true,'Reference solution','easy')")
+        .execute(ctx.state.db()).await.unwrap();
+    sqlx::query("INSERT INTO course_ai_assistants(course_id,studio_assistant_id,name,discipline,snapshot_version,snapshot,enabled) VALUES($1,'config-assistant','Tutor','Physical chemistry','1','{}',true)")
+        .bind(&course.id).execute(ctx.state.db()).await.unwrap();
+
+    let prior_url = std::env::var("STUDIO_API_URL").ok();
+    let prior_token = std::env::var("STUDIO_INTEGRATION_TOKEN").ok();
+    for (url, token) in [("", "test-token"), ("   ", "test-token"), ("http://127.0.0.1:9", "")] {
+        // Empty env values override any dotenv file; no real Studio is contacted.
+        std::env::set_var("STUDIO_API_URL", url);
+        std::env::set_var("STUDIO_INTEGRATION_TOKEN", token);
+        let settings = crate::core::config::Settings::load();
+        for (key, prior) in
+            [("STUDIO_API_URL", &prior_url), ("STUDIO_INTEGRATION_TOKEN", &prior_token)]
+        {
+            match prior {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        ctx.state = crate::core::state::AppState::new(
+            settings.unwrap(),
+            ctx.state.db().clone(),
+            ctx.state.redis().clone(),
+            None,
+        );
+        ctx.app = crate::api::router::router(ctx.state.clone());
+        let bearer = test_support::bearer_token(&admin.id, ctx.state.settings());
+        let response = ctx.app.clone().oneshot(test_support::json_request(
+            Method::POST,
+            &format!("/api/v1/courses/{}/trainer/sets/generate", course.id),
+            Some(&bearer),
+            Some(json!({"source":"studio_fizicheskaya_himiya","count":1,"filters":{"topic":"Кинетика","difficulty":"easy","has_solution":true,"has_answer":true}})),
+        )).await.unwrap();
+        let status = response.status();
+        let body = test_support::read_json(response).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "missing Studio config: {body}");
+        assert!(body["detail"].as_str().unwrap_or("").contains("Studio не настроена"), "{body}");
+        let sets: i64 = sqlx::query_scalar("SELECT count(*) FROM trainer_sets WHERE course_id=$1")
+            .bind(&course.id)
+            .fetch_one(ctx.state.db())
+            .await
+            .unwrap();
+        assert_eq!(sets, 0, "Missing Studio config must not create a bank-backed set");
+    }
+}
+
+#[tokio::test]
 async fn private_trainer_set_requires_explicit_practice_reveal() {
     let ctx = test_support::setup_test_context().await;
     let teacher =

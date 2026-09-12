@@ -73,9 +73,7 @@ pub(super) async fn generate_set(
         )
         .await?;
     }
-    if source.code == "studio_fizicheskaya_himiya"
-        && !state.settings().studio_integration().api_url.trim().is_empty()
-    {
+    if source.code == repositories::trainer_sets::PHYSICAL_CHEMISTRY_SOURCE {
         return generate_physical_chemistry_set(
             &state,
             &course_id,
@@ -259,7 +257,7 @@ async fn generate_physical_chemistry_set(
             ApiError::UnprocessableEntity("Ассистент физической химии ещё не опубликован".into())
         })?;
     let settings = state.settings().studio_integration();
-    if settings.token.trim().is_empty() {
+    if settings.api_url.trim().is_empty() || settings.token.trim().is_empty() {
         return Err(ApiError::ServiceUnavailable(
             "Генерация задач временно недоступна: Studio не настроена".into(),
         ));
