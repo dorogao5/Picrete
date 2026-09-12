@@ -8,6 +8,16 @@ use crate::db::types::CourseRole;
 use crate::repositories;
 use crate::test_support;
 
+#[test]
+fn generated_set_accepts_only_nonempty_bounded_verified_subset() {
+    for actual in [1, 3, 5] {
+        assert!(super::handlers::validate_generated_count(actual, 5).is_ok());
+    }
+    for (actual, requested) in [(0, 5), (6, 5), (1, 0), (1, -1)] {
+        assert!(super::handlers::validate_generated_count(actual, requested).is_err());
+    }
+}
+
 #[tokio::test]
 async fn private_trainer_set_requires_explicit_practice_reveal() {
     let ctx = test_support::setup_test_context().await;

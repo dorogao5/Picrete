@@ -90,7 +90,7 @@ pub(super) async fn list(
     State(state): State<AppState>,
     Query(q): Query<QueryOptions>,
 ) -> Result<Json<Value>, ApiError> {
-    require_course_membership(&state, &user, &course).await?;
+    let access = require_course_membership(&state, &user, &course).await?;
     if q.manage {
         require_course_role(&state, &user, &course, CourseRole::Teacher).await?;
     }
@@ -102,7 +102,29 @@ pub(super) async fn list(
         let def: Value = if q.manage { r.get("draft") } else { r.get("published") };
         let progress = progress(&state, &course, &user.id, &id, release.as_deref()).await?;
         let source = trainer_source(&state, &course, &def).await?;
-        items.push(json!({"id":id,"definition":def,"source":source,"published":r.get::<Option<Value>,_>("published").is_some(),"release_id":release,"revision":r.get::<i32,_>("revision"),"progress":progress}));
+        let mut generation_unlock = serde_json::Map::new();
+        if source == repositories::trainer_sets::PHYSICAL_CHEMISTRY_SOURCE {
+            for section in def["sections"].as_array().into_iter().flatten() {
+                if let Some(section_id) = section["id"].as_str() {
+                    let unlocked = if access.roles.contains(&CourseRole::Teacher) {
+                        true
+                    } else {
+                        repositories::trainer_sets::generation_solved_count(
+                            state.db(),
+                            &course,
+                            &user.id,
+                            &id,
+                            section_id,
+                        )
+                        .await
+                        .map_err(db)?
+                            >= 3
+                    };
+                    generation_unlock.insert(section_id.to_owned(), json!(unlocked));
+                }
+            }
+        }
+        items.push(json!({"id":id,"definition":def,"source":source,"published":r.get::<Option<Value>,_>("published").is_some(),"release_id":release,"revision":r.get::<i32,_>("revision"),"progress":progress,"generation_unlock":generation_unlock}));
     }
     Ok(Json(json!({"items":items})))
 }

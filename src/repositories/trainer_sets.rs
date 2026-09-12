@@ -4,6 +4,33 @@ use time::PrimitiveDateTime;
 
 use crate::db::models::TrainerSet;
 
+pub(crate) const PHYSICAL_CHEMISTRY_SOURCE: &str = "studio_fizicheskaya_himiya";
+
+// Deliberately independent of release and difficulty: republishing and changing
+// levels must not erase an earned unlock or count the same task twice.
+pub(crate) async fn generation_solved_count(
+    pool: &PgPool,
+    course_id: &str,
+    student_id: &str,
+    trainer_id: &str,
+    section_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(DISTINCT a.task_id) FROM practice_attempts a
+         JOIN task_bank_items i ON i.id=a.task_id
+         JOIN task_bank_sources s ON s.id=i.source_id
+         WHERE a.course_id=$1 AND a.student_id=$2 AND a.trainer_id=$3
+           AND a.section_id=$4 AND a.solved AND NOT a.preview AND s.code=$5",
+    )
+    .bind(course_id)
+    .bind(student_id)
+    .bind(trainer_id)
+    .bind(section_id)
+    .bind(PHYSICAL_CHEMISTRY_SOURCE)
+    .fetch_one(pool)
+    .await
+}
+
 pub(crate) const TRAINER_SET_COLUMNS: &str = "\
     id, student_id, course_id, title, source_id, filters, is_deleted, created_at, updated_at";
 

@@ -40,20 +40,51 @@ struct StudioTrainerGenerationRequest {
     count: i64,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct GenerateRequest {
+    #[serde(flatten)]
+    payload: TrainerGenerateRequest,
+    trainer_id: Option<String>,
+    section_id: Option<String>,
+}
+
 pub(super) async fn generate_set(
     Path(course_id): Path<String>,
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
-    Json(payload): Json<TrainerGenerateRequest>,
+    Json(request): Json<GenerateRequest>,
 ) -> Result<(StatusCode, Json<TrainerSetResponse>), ApiError> {
-    require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
+    let access = require_course_role(&state, &user, &course_id, CourseRole::Student).await?;
+    let payload = request.payload;
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let source = resolve_source(state.db(), &course_id, &payload.source).await?;
+    if source.code == repositories::trainer_sets::PHYSICAL_CHEMISTRY_SOURCE
+        && !access.roles.contains(&CourseRole::Teacher)
+    {
+        require_generation_unlock(
+            &state,
+            &course_id,
+            &user.id,
+            &source.id,
+            request.trainer_id.as_deref(),
+            request.section_id.as_deref(),
+            payload.filters.topic.as_deref(),
+        )
+        .await?;
+    }
     if source.code == "studio_fizicheskaya_himiya"
         && !state.settings().studio_integration().api_url.trim().is_empty()
     {
-        return generate_physical_chemistry_set(&state, &course_id, &user.id, &payload).await;
+        return generate_physical_chemistry_set(
+            &state,
+            &course_id,
+            &user.id,
+            &payload,
+            request.trainer_id.as_deref(),
+            request.section_id.as_deref(),
+        )
+        .await;
     }
     let filter_params = build_filter_params(
         &source.id,
@@ -116,6 +147,8 @@ pub(super) async fn generate_set(
         "has_answer": payload.filters.has_answer,
         "count": payload.count,
         "seed": payload.seed,
+        "trainer_id": request.trainer_id,
+        "section_id": request.section_id,
     });
     let title = payload
         .title
@@ -153,11 +186,61 @@ pub(super) async fn generate_set(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
+async fn require_generation_unlock(
+    state: &AppState,
+    course_id: &str,
+    student_id: &str,
+    source_id: &str,
+    trainer_id: Option<&str>,
+    section_id: Option<&str>,
+    topic: Option<&str>,
+) -> Result<(), ApiError> {
+    let (Some(trainer_id), Some(section_id)) = (trainer_id, section_id) else {
+        return Err(ApiError::BadRequest("Выберите тренажёр и подтему".into()));
+    };
+    // Resolve against the published catalog, never trust the client topic alone.
+    let section = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT section FROM course_trainers t,
+         LATERAL jsonb_array_elements(t.published->'sections') section
+         WHERE t.course_id=$1 AND t.id=$2 AND section->>'id'=$3
+           AND EXISTS (SELECT 1 FROM jsonb_array_elements(section->'items') item
+             JOIN task_bank_items i ON i.id=item->>'task_id' WHERE i.source_id=$4)",
+    )
+    .bind(course_id)
+    .bind(trainer_id)
+    .bind(section_id)
+    .bind(source_id)
+    .fetch_optional(state.db())
+    .await
+    .map_err(|e| ApiError::internal(e, "Не удалось загрузить подтему"))?
+    .ok_or_else(|| ApiError::BadRequest("Подтема не опубликована или не найдена".into()))?;
+    if topic.map(str::trim) != section["title"].as_str().map(str::trim) {
+        return Err(ApiError::BadRequest(
+            "Тема генерации не соответствует выбранной подтеме".into(),
+        ));
+    }
+    let solved = repositories::trainer_sets::generation_solved_count(
+        state.db(),
+        course_id,
+        student_id,
+        trainer_id,
+        section_id,
+    )
+    .await
+    .map_err(|e| ApiError::internal(e, "Не удалось загрузить прогресс"))?;
+    if solved < 3 {
+        return Err(ApiError::Forbidden("решите 3 задачи"));
+    }
+    Ok(())
+}
+
 async fn generate_physical_chemistry_set(
     state: &AppState,
     course_id: &str,
     student_id: &str,
     payload: &TrainerGenerateRequest,
+    trainer_id: Option<&str>,
+    section_id: Option<&str>,
 ) -> Result<(StatusCode, Json<TrainerSetResponse>), ApiError> {
     let topic = payload
         .filters
@@ -206,9 +289,10 @@ async fn generate_physical_chemistry_set(
         .await
         .map_err(|e| ApiError::internal(e, "Studio вернула некорректный набор задач"))?;
     let imported = crate::api::studio_grading::import_task_bank(state, course_id, export).await?;
-    if imported.item_ids.len() != payload.count as usize {
-        return Err(ApiError::ServiceUnavailable("Неполный набор задач не выдан студенту".into()));
-    }
+    // Studio exports only verified tasks. Keep a nonempty verified subset;
+    // never fill missing slots from the bank or initiate another paid call.
+    validate_generated_count(imported.item_ids.len(), payload.count)?;
+    let actual_count = imported.item_ids.len() as i64;
 
     let now = primitive_now_utc();
     let trainer_set_id = Uuid::new_v4().to_string();
@@ -219,10 +303,14 @@ async fn generate_physical_chemistry_set(
         "volume": payload.filters.volume,
         "has_solution": true,
         "mode": "studio_generated",
+        "trainer_id": trainer_id,
+        "section_id": section_id,
         "paragraph": normalize_optional(&payload.filters.paragraph),
         "topic": topic,
         "has_answer": true,
-        "count": payload.count,
+        "count": actual_count,
+        "requested_count": payload.count,
+        "pending_count": payload.count - actual_count,
     });
     let title = payload
         .title
@@ -505,6 +593,15 @@ async fn load_set_response(
         updated_at: format_primitive(set.updated_at),
         items: item_responses,
     })
+}
+
+pub(super) fn validate_generated_count(actual: usize, requested: i64) -> Result<(), ApiError> {
+    if !usize::try_from(requested).is_ok_and(|requested| (1..=requested).contains(&actual)) {
+        return Err(ApiError::ServiceUnavailable(
+            "Studio вернула пустой набор или больше задач, чем запрошено".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_optional(value: &Option<String>) -> Option<String> {

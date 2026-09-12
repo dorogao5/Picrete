@@ -109,8 +109,13 @@ pub(crate) async fn tick(state: &AppState) -> Result<()> {
 }
 fn is_solved(result: &Value) -> bool {
     result["unreadable"].as_bool() == Some(false)
+        && result["needs_teacher_review"].as_bool() != Some(true)
         && result["max_score"].as_f64().is_some_and(|max| {
-            max > 0.0 && result["total_score"].as_f64().is_some_and(|score| score >= max)
+            max.is_finite()
+                && max > 0.0
+                && result["total_score"]
+                    .as_f64()
+                    .is_some_and(|score| score.is_finite() && score == max)
         })
 }
 async fn compute(state: &AppState, a: &Value, kind: &str, payload: &Value) -> Result<Value> {
@@ -188,13 +193,31 @@ mod tests {
     #[test]
     fn progress_requires_readable_full_credit() {
         assert!(is_solved(&json!({"unreadable":false,"total_score":5,"max_score":5})));
+        assert!(is_solved(
+            &json!({"unreadable":false,"total_score":2.5,"max_score":2.5,"needs_teacher_review":false})
+        ));
         for v in [
+            json!({"unreadable":false,"total_score":5,"max_score":5,"needs_teacher_review":true}),
             json!({"unreadable":true,"total_score":5,"max_score":5}),
             json!({"unreadable":false,"total_score":4,"max_score":5}),
+            json!({"unreadable":false,"total_score":6,"max_score":5}),
+            json!({"unreadable":false,"total_score":-1,"max_score":5}),
+            json!({"unreadable":false,"total_score":-1,"max_score":-1}),
             json!({"unreadable":false,"total_score":0,"max_score":0}),
+            json!({"unreadable":false,"total_score":"5","max_score":5}),
+            json!({"unreadable":false,"total_score":5}),
+            json!({"unreadable":false,"max_score":5}),
             json!({}),
         ] {
-            assert!(!is_solved(&v));
+            assert!(!is_solved(&v), "Unexpected solved result: {v}");
+        }
+        // serde_json represents non-finite floats as null; these must fail closed.
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for field in ["total_score", "max_score"] {
+                let mut result = json!({"unreadable":false,"total_score":5,"max_score":5});
+                result[field] = json!(value);
+                assert!(!is_solved(&result), "Unexpected solved result: {result}");
+            }
         }
     }
 }

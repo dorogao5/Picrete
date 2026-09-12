@@ -4,7 +4,8 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src ./src
 COPY migrations ./migrations
-RUN cargo build --release --bins
+ARG BUILD_REVISION=unknown
+RUN cargo build --release --locked --bins
 
 FROM ubuntu:24.04
 
