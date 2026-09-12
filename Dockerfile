@@ -1,3 +1,11 @@
+FROM rust:1.88.0-bookworm AS builder
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY src ./src
+COPY migrations ./migrations
+RUN cargo build --release --bins
+
 FROM ubuntu:24.04
 
 RUN apt-get update \
@@ -10,9 +18,9 @@ LABEL org.opencontainers.image.source="https://github.com/dorogao5/Picrete"
 
 WORKDIR /app
 
-COPY target/release/picrete-rust /usr/local/bin/picrete-rust
-COPY target/release/worker /usr/local/bin/picrete-worker
-COPY target/release/telegram_bot /usr/local/bin/picrete-telegram-bot
+COPY --from=builder /build/target/release/picrete-rust /usr/local/bin/picrete-rust
+COPY --from=builder /build/target/release/worker /usr/local/bin/picrete-worker
+COPY --from=builder /build/target/release/telegram_bot /usr/local/bin/picrete-telegram-bot
 COPY migrations /app/migrations
 
 EXPOSE 8000
