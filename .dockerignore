@@ -1,5 +1,10 @@
 *
 !Dockerfile
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!src/
+!src/**
 !target/
 target/*
 !target/release/
