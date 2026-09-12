@@ -104,10 +104,33 @@ pub(super) async fn list(
         let source = trainer_source(&state, &course, &def).await?;
         let mut generation_unlock = serde_json::Map::new();
         let mut generation_progress = serde_json::Map::new();
-        let studio_generation = repositories::trainer_sets::uses_studio_generation(state.db(), &course, &source).await.map_err(db)?;
+        let studio_generation =
+            repositories::trainer_sets::uses_studio_generation(state.db(), &course, &source)
+                .await
+                .map_err(db)?;
+        let assistant =
+            repositories::course_ai_assistants::find(state.db(), &course).await.map_err(db)?;
+        let blueprints = assistant
+            .as_ref()
+            .and_then(|a| a.snapshot.pointer("/assistant/runtime_policy/generation_blueprints"))
+            .and_then(Value::as_array)
+            .filter(|items| !items.is_empty());
+        let mut generation_levels = serde_json::Map::new();
         if studio_generation {
             for section in def["sections"].as_array().into_iter().flatten() {
                 if let Some(section_id) = section["id"].as_str() {
+                    if let Some(blueprints) = blueprints {
+                        let mut levels: Vec<&str> = blueprints
+                            .iter()
+                            .filter(|b| {
+                                b["topic"] == section["title"] || b["name"] == section["title"]
+                            })
+                            .filter_map(|b| b["difficulty"].as_str())
+                            .collect();
+                        levels.sort_unstable();
+                        levels.dedup();
+                        generation_levels.insert(section_id.to_owned(), json!(levels));
+                    }
                     let unlocked = if access.roles.contains(&CourseRole::Teacher) {
                         true
                     } else {
@@ -129,6 +152,9 @@ pub(super) async fn list(
             }
         }
         let mut item = json!({"id":id,"definition":def,"source":source,"published":r.get::<Option<Value>,_>("published").is_some(),"release_id":release,"revision":r.get::<i32,_>("revision"),"progress":progress,"generation_unlock":generation_unlock,"studio_generation":studio_generation});
+        if blueprints.is_some() {
+            item["generation_levels"] = json!(generation_levels);
+        }
         if !generation_progress.is_empty() {
             item["generation_progress"] = json!(generation_progress);
         }

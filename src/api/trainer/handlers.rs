@@ -59,11 +59,11 @@ pub(super) async fn generate_set(
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let source = resolve_source(state.db(), &course_id, &payload.source).await?;
-    let studio_generation = repositories::trainer_sets::uses_studio_generation(state.db(), &course_id, &source.code)
-        .await.map_err(|e| ApiError::internal(e, "Не удалось загрузить политику генерации"))?;
-    if studio_generation
-        && !access.roles.contains(&CourseRole::Teacher)
-    {
+    let studio_generation =
+        repositories::trainer_sets::uses_studio_generation(state.db(), &course_id, &source.code)
+            .await
+            .map_err(|e| ApiError::internal(e, "Не удалось загрузить политику генерации"))?;
+    if studio_generation && !access.roles.contains(&CourseRole::Teacher) {
         require_generation_unlock(
             &state,
             &course_id,
@@ -242,15 +242,14 @@ async fn generate_studio_set(
     trainer_id: Option<&str>,
     section_id: Option<&str>,
 ) -> Result<(StatusCode, Json<TrainerSetResponse>), ApiError> {
-    let topic = payload
-        .filters
-        .topic
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-        ApiError::BadRequest("Для генерации выберите подтему курса".into())
-    })?;
+    let topic =
+        payload
+            .filters
+            .topic
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::BadRequest("Для генерации выберите подтему курса".into()))?;
     let difficulty = payload.filters.difficulty.as_deref().unwrap_or("easy").trim().to_string();
     let assistant = repositories::course_ai_assistants::find(state.db(), course_id)
         .await

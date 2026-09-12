@@ -6,11 +6,22 @@ use crate::db::models::TrainerSet;
 
 pub(crate) const PHYSICAL_CHEMISTRY_SOURCE: &str = "studio_fizicheskaya_himiya";
 
-pub(crate) async fn uses_studio_generation(pool: &PgPool, course_id: &str, source: &str) -> Result<bool, sqlx::Error> {
-    if source == PHYSICAL_CHEMISTRY_SOURCE { return Ok(true); }
+pub(crate) async fn uses_studio_generation(
+    pool: &PgPool,
+    course_id: &str,
+    source: &str,
+) -> Result<bool, sqlx::Error> {
+    if source == PHYSICAL_CHEMISTRY_SOURCE {
+        return Ok(true);
+    }
     let assistant = super::course_ai_assistants::find(pool, course_id).await?;
-    Ok(assistant.is_some_and(|a| a.enabled &&
-        a.snapshot.pointer("/assistant/runtime_policy/generation_policy").and_then(serde_json::Value::as_str) == Some("single_verifier")))
+    Ok(assistant.is_some_and(|a| {
+        a.enabled
+            && a.snapshot
+                .pointer("/assistant/runtime_policy/generation_policy")
+                .and_then(serde_json::Value::as_str)
+                == Some("single_verifier")
+    }))
 }
 
 // Deliberately independent of release and difficulty: republishing and changing

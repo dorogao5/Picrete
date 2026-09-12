@@ -13,6 +13,8 @@ pub(crate) struct PublishedRuntimePolicy {
     #[serde(default)]
     pub(crate) generation_policy: String,
     #[serde(default)]
+    pub(crate) generation_blueprints: Vec<Value>,
+    #[serde(default)]
     pub(crate) tutor_model_id: String,
     #[serde(default)]
     pub(crate) decision_model_id: String,
@@ -562,6 +564,7 @@ mod tests {
         let policy = PublishedRuntimePolicy {
             policy_version: "model-use-v1:test".to_string(),
             generation_policy: String::new(),
+            generation_blueprints: vec![],
             tutor_model_id: "deepseek-v4-pro".to_string(),
             decision_model_id: "deepseek-v4-pro".to_string(),
             tutor_provider_kind: String::new(),
@@ -581,6 +584,7 @@ mod tests {
         let policy = PublishedRuntimePolicy {
             policy_version: "model-use-v1:test".to_string(),
             generation_policy: String::new(),
+            generation_blueprints: vec![],
             tutor_model_id: "deepseek-v4-pro".to_string(),
             decision_model_id: "deepseek-v4-pro".to_string(),
             tutor_provider_kind: String::new(),
