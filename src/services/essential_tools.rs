@@ -259,7 +259,8 @@ pub(crate) async fn complete(
                 if empty && finalization_continuations == 0 && traces.iter().any(|trace: &Value| trace["status"] == "success") {
                     finalization_continuations = 1;
                     payload["tool_choice"] = json!("none");
-                    payload["messages"].as_array_mut().unwrap().push(json!({"role":"user","content":TOOL_FINALIZATION_PROMPT}));
+                    let system = payload["messages"][0]["content"].as_str().context("Missing system prompt")?;
+                    payload["messages"][0]["content"] = json!(format!("{system}\n{TOOL_FINALIZATION_PROMPT}"));
                     tracing::info!(%flow_id, finalization_continuations, usage_by_call = %json!(usage_by_call), "Finalizing empty answer from existing tool results");
                     continue;
                 }
@@ -287,13 +288,9 @@ pub(crate) async fn complete(
                     .and_then(|arguments| { validate_arguments(name, &arguments)?; Ok(arguments) });
                 validated.push((id.to_owned(), name.to_owned(), arguments));
             }
-            let mut continuation = message.clone();
-            if is_qwen_model(payload["model"].as_str().unwrap_or_default()) {
-                // Qwen replays tool reasoning when echoed; preserve all other
-                // fields and leave DeepSeek's required reasoning continuation intact.
-                continuation.as_object_mut().unwrap().remove("reasoning_content");
-            }
-            payload["messages"].as_array_mut().unwrap().push(continuation);
+            // Preserve current-turn reasoning for every model; it belongs only
+            // to the in-memory continuation, never to the private audit.
+            payload["messages"].as_array_mut().unwrap().push(message.clone());
             for (id, name, arguments) in validated {
                 let result = match arguments {
                     Ok(arguments) => gateway.invoke(&name, &arguments).await?,
@@ -311,18 +308,6 @@ pub(crate) async fn complete(
         }
         anyhow::bail!("Missing final tool-enabled completion")
     }).await.context("Essential tool flow timed out")?
-}
-
-// Compatibility only: this never selects or changes the configured model route.
-fn is_qwen_model(model: &str) -> bool {
-    let model = model.trim().to_ascii_lowercase();
-    let name = if let Some(uri) = model.strip_prefix("gpt://") {
-        // Yandex: gpt://folder/model[/version].
-        uri.split('/').nth(1).unwrap_or_default()
-    } else {
-        model.rsplit('/').next().unwrap_or_default()
-    };
-    name.starts_with("qwen")
 }
 
 #[cfg(test)]
@@ -660,16 +645,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn empty_final_after_success_gets_one_same_context_finisher_with_usage() {
-        let mut fixture = mock(
-            vec![
-                tool_body("calculator", json!({"expression":"2+2"}), "calc"),
-                empty_final_body(),
-                final_body(),
-            ],
-            StatusCode::OK,
-            success(),
-        )
-        .await;
+        let mut tool_call = tool_body("calculator", json!({"expression":"2+2"}), "calc");
+        tool_call["choices"][0]["message"]["reasoning_content"] =
+            json!("Private current-turn reasoning");
+        let mut fixture =
+            mock(vec![tool_call, empty_final_body(), final_body()], StatusCode::OK, success())
+                .await;
         fixture.gateway.max_rounds = 1; // A finisher also works at the normal round boundary.
         let result = run(&fixture).await.unwrap();
         assert_eq!(result["usage"]["total_tokens"], 47);
@@ -683,12 +664,22 @@ pub(crate) mod tests {
         assert_eq!(fixture.tool_requests.lock().unwrap().len(), 1);
         let previous = requests[1]["messages"].as_array().unwrap();
         let finishing = requests[2]["messages"].as_array().unwrap();
-        assert_eq!(&finishing[..previous.len()], previous.as_slice());
-        assert_eq!(finishing.len(), previous.len() + 1);
+        assert_eq!(&finishing[1..], &previous[1..]);
+        assert_eq!(finishing.len(), previous.len());
+        assert_eq!(finishing[0]["role"], "system");
         assert_eq!(
-            finishing.last().unwrap(),
-            &json!({"role":"user","content":TOOL_FINALIZATION_PROMPT})
+            finishing[0]["content"],
+            json!(format!(
+                "{}\n{TOOL_FINALIZATION_PROMPT}",
+                previous[0]["content"].as_str().unwrap()
+            ))
         );
+        assert_eq!(finishing.iter().filter(|m| m["role"] == "user").count(), 1);
+        assert_eq!(finishing[2]["reasoning_content"], "Private current-turn reasoning");
+        assert!(!result["_private_tool_metadata"]
+            .to_string()
+            .contains("Private current-turn reasoning"));
+        assert!(!result["_private_tool_metadata"].to_string().contains("reasoning_content"));
         assert_eq!(requests[2]["tool_choice"], "none");
         for key in ["model", "tools", "response_format"] {
             assert_eq!(requests[2][key], requests[1][key]);
@@ -775,15 +766,15 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn qwen_omits_only_replayed_reasoning_deepseek_keeps_it() {
-        for (model, strip_reasoning) in [
-            ("qwen3-235b", true),
-            ("Qwen/Qwen3.5-2B", true),
-            ("gpt://folder/qwen3-235b/latest", true),
-            ("gpt://folder/qwen3-235b", true),
-            ("deepseek-v4-pro", false),
-            ("gpt://qwen-folder/deepseek-v4-pro/latest", false),
-            ("other-qwen-model", false),
+    async fn qwen_and_deepseek_preserve_current_reasoning_without_audit_leak() {
+        for model in [
+            "qwen3-235b",
+            "Qwen/Qwen3.5-2B",
+            "gpt://folder/qwen3-235b/latest",
+            "gpt://folder/qwen3-235b",
+            "deepseek-v4-pro",
+            "gpt://qwen-folder/deepseek-v4-pro/latest",
+            "other-model",
         ] {
             let mut call = tool_body("calculator", json!({"expression":"2+2"}), "calc");
             call["choices"][0]["message"]["reasoning_content"] = json!("Internal tool reasoning");
@@ -808,11 +799,15 @@ pub(crate) mod tests {
             let requests = fixture.model_requests.lock().unwrap();
             assert_eq!(requests.len(), 2);
             assert_eq!(fixture.tool_requests.lock().unwrap().len(), 1);
-            let mut expected = call["choices"][0]["message"].clone();
-            if strip_reasoning {
-                expected.as_object_mut().unwrap().remove("reasoning_content");
-            }
+            let expected = call["choices"][0]["message"].clone();
             assert_eq!(requests[1]["messages"][2], expected, "{model}");
+            assert!(!result["_private_tool_metadata"]
+                .to_string()
+                .contains("Internal tool reasoning"));
+            assert!(!result["_private_tool_metadata"]
+                .to_string()
+                .contains("Final reasoning unchanged"));
+            assert!(!result["_private_tool_metadata"].to_string().contains("reasoning_content"));
             let tool_result: Value =
                 serde_json::from_str(requests[1]["messages"][3]["content"].as_str().unwrap())
                     .unwrap();

@@ -617,7 +617,15 @@ mod tests {
                     1
                 }
             );
-            assert_eq!(requests[0]["messages"][0], requests.last().unwrap()["messages"][0]);
+            if finish_empty {
+                assert!(requests.last().unwrap()["messages"][0]["content"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(requests[0]["messages"][0]["content"].as_str().unwrap()));
+                assert_eq!(requests.last().unwrap()["messages"][0]["role"], "system");
+            } else {
+                assert_eq!(requests[0]["messages"][0], requests.last().unwrap()["messages"][0]);
+            }
             assert_eq!(requests[0].get("tools").is_some(), enabled);
             assert!(requests[0]["messages"][0]["content"]
                 .as_str()
