@@ -71,9 +71,15 @@ impl Settings {
             "ASSISTANT_CHAT_MAX_CONCURRENT",
             env_or_default("ASSISTANT_CHAT_MAX_CONCURRENT", "12"),
         )?;
-        let ai_max_tokens = parse_u32("AI_MAX_TOKENS", env_or_default("AI_MAX_TOKENS", "10000"))?;
         let ai_request_timeout =
             parse_u64("AI_REQUEST_TIMEOUT", env_or_default("AI_REQUEST_TIMEOUT", "600"))?;
+        let provider_routes = match env_optional("ASSISTANT_AI_PROVIDER_ROUTES_JSON") {
+            Some(raw) => serde_json::from_str(&raw).map_err(|_| ConfigError::InvalidValue {
+                field: "ASSISTANT_AI_PROVIDER_ROUTES_JSON",
+                value: "<invalid json>".to_string(),
+            })?,
+            None => std::collections::HashMap::new(),
+        };
         let studio_integration_token = env_or_default("STUDIO_INTEGRATION_TOKEN", "");
 
         let datalab_api_key = env_or_default("DATALAB_API_KEY", "");
@@ -191,10 +197,12 @@ impl Settings {
                 assistant_model,
                 assistant_request_timeout,
                 assistant_max_concurrent_requests,
-                ai_max_tokens,
                 ai_request_timeout,
+                provider_routes,
             },
             datalab: DatalabSettings {
+                fallback_api_key: env_optional("DATALAB_FALLBACK_API_KEY")
+                    .filter(|key| !key.trim().is_empty()),
                 api_key: datalab_api_key,
                 base_url: datalab_base_url,
                 mode: datalab_mode,

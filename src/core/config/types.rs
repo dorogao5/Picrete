@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -79,8 +80,29 @@ pub(crate) struct AiSettings {
     pub(crate) assistant_model: String,
     pub(crate) assistant_request_timeout: u64,
     pub(crate) assistant_max_concurrent_requests: u32,
-    pub(crate) ai_max_tokens: u32,
     pub(crate) ai_request_timeout: u64,
+    /// Credentials and OpenAI-compatible base URLs keyed by the provider kind
+    /// stored in Studio's immutable assistant snapshot. The legacy fields
+    /// above remain the fallback for snapshots published before per-assistant
+    /// provider routing was introduced.
+    pub(crate) provider_routes: HashMap<String, AiProviderRoute>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct AiProviderRoute {
+    pub(crate) api_key: String,
+    pub(crate) base_url: String,
+}
+
+impl AiSettings {
+    pub(crate) fn provider_route(&self, kind: &str) -> Option<&AiProviderRoute> {
+        self.provider_routes.get(kind).or_else(|| {
+            self.provider_routes
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(kind))
+                .map(|(_, route)| route)
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +112,7 @@ pub(crate) struct StudioIntegrationSettings {
 
 #[derive(Debug, Clone)]
 pub(crate) struct DatalabSettings {
+    pub(crate) fallback_api_key: Option<String>,
     pub(crate) api_key: String,
     pub(crate) base_url: String,
     pub(crate) mode: String,

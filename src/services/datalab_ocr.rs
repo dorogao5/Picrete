@@ -17,6 +17,7 @@ pub(crate) struct OcrResult {
 pub(crate) struct DatalabOcrService {
     client: Client,
     api_key: String,
+    fallback_api_key: Option<String>,
     base_url: String,
     mode: String,
     output_format: String,
@@ -43,6 +44,7 @@ impl DatalabOcrService {
         Ok(Self {
             client,
             api_key: settings.datalab().api_key.clone(),
+            fallback_api_key: settings.datalab().fallback_api_key.clone(),
             base_url: settings.datalab().base_url.trim_end_matches('/').to_string(),
             mode: settings.datalab().mode.clone(),
             output_format: settings.datalab().output_format.clone(),
@@ -53,11 +55,23 @@ impl DatalabOcrService {
     }
 
     pub(crate) async fn run_marker_for_file_url(&self, file_url: &str) -> Result<OcrResult> {
-        let job_ref = self.submit_marker_job(file_url).await?;
-        self.poll_marker_result(&job_ref).await
+        let (job_ref, api_key) = match self.submit_marker_job(file_url, &self.api_key).await {
+            Ok(job) => (job, self.api_key.as_str()),
+            Err(error) if error.downcast_ref::<CreditExhausted>().is_some() => {
+                let key = self
+                    .fallback_api_key
+                    .as_deref()
+                    .filter(|key| *key != self.api_key)
+                    .ok_or(error)?;
+                tracing::warn!("DataLab primary credits exhausted; using fallback key for OCR");
+                (self.submit_marker_job(file_url, key).await?, key)
+            }
+            Err(error) => return Err(error),
+        };
+        self.poll_marker_result(&job_ref, api_key).await
     }
 
-    async fn submit_marker_job(&self, file_url: &str) -> Result<MarkerJobRef> {
+    async fn submit_marker_job(&self, file_url: &str, api_key: &str) -> Result<MarkerJobRef> {
         let endpoint = format!("{}/marker", self.base_url);
 
         let mut last_error = None;
@@ -71,7 +85,7 @@ impl DatalabOcrService {
             let response = self
                 .client
                 .post(&endpoint)
-                .header("X-Api-Key", &self.api_key)
+                .header("X-Api-Key", api_key)
                 .multipart(form)
                 .send()
                 .await;
@@ -91,6 +105,9 @@ impl DatalabOcrService {
                         )
                     })?;
 
+                    if credits_exhausted(status.as_u16(), &parsed) {
+                        return Err(CreditExhausted.into());
+                    }
                     if !status.is_success() {
                         last_error = Some(anyhow::anyhow!(
                             "DataLab marker submit failed (status {}): {}",
@@ -129,12 +146,12 @@ impl DatalabOcrService {
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown DataLab submit error")))
     }
 
-    async fn poll_marker_result(&self, job_ref: &MarkerJobRef) -> Result<OcrResult> {
+    async fn poll_marker_result(&self, job_ref: &MarkerJobRef, api_key: &str) -> Result<OcrResult> {
         for attempt in 0..self.max_poll_attempts {
             let response = self
                 .client
                 .get(&job_ref.request_check_url)
-                .header("X-Api-Key", &self.api_key)
+                .header("X-Api-Key", api_key)
                 .send()
                 .await
                 .context("Failed to call DataLab marker result endpoint")?;
@@ -283,4 +300,126 @@ fn extract_error_message(payload: &Value) -> String {
         .or_else(|| payload.get("error").and_then(Value::as_str))
         .unwrap_or("unknown_error")
         .to_string()
+}
+
+#[derive(Debug)]
+struct CreditExhausted;
+impl std::fmt::Display for CreditExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DataLab OCR credits exhausted")
+    }
+}
+impl std::error::Error for CreditExhausted {}
+
+fn credits_exhausted(status: u16, payload: &Value) -> bool {
+    if payload.get("cloudflare_error").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
+    let message = extract_error_message(payload).to_ascii_lowercase();
+    (status == 402
+        || status == 403
+        || payload.get("success").and_then(Value::as_bool) == Some(false))
+        && [
+            "insufficient credits",
+            "insufficient balance",
+            "out of credits",
+            "no credits",
+            "credits exhausted",
+            "credit balance",
+            "exceeded your credits",
+            "payment required",
+        ]
+        .iter()
+        .any(|reason| message.contains(reason))
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    #[test]
+    fn fallback_only_for_billing_denials() {
+        assert!(credits_exhausted(403, &serde_json::json!({"detail":"Insufficient credits"})));
+        assert!(credits_exhausted(402, &serde_json::json!({"detail":"Payment required"})));
+        assert!(!credits_exhausted(403, &serde_json::json!({"detail":"Invalid API key"})));
+        assert!(!credits_exhausted(
+            403,
+            &serde_json::json!({"cloudflare_error":true,"detail":"Access denied"})
+        ));
+        assert!(!credits_exhausted(429, &serde_json::json!({"detail":"Rate limit exceeded"})));
+        assert!(!credits_exhausted(
+            200,
+            &serde_json::json!({"success":true,"detail":"credit balance"})
+        ));
+    }
+}
+
+#[cfg(test)]
+mod fallback_flow_tests {
+    use super::*;
+    use axum::{
+        http::{HeaderMap, StatusCode},
+        routing::{get, post},
+        Json, Router,
+    };
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn exhausted_primary_submits_and_polls_with_backup() {
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let submit_seen = seen.clone();
+        let poll_seen = seen.clone();
+        let app = Router::new()
+            .route(
+                "/marker",
+                post(move |headers: HeaderMap| {
+                    let seen = submit_seen.clone();
+                    async move {
+                        let key = headers["x-api-key"].to_str().unwrap().to_string();
+                        seen.lock().unwrap().push(format!("submit:{key}"));
+                        if key == "primary" {
+                            (
+                                StatusCode::FORBIDDEN,
+                                Json(serde_json::json!({"detail":"Insufficient credits"})),
+                            )
+                        } else {
+                            (
+                                StatusCode::OK,
+                                Json(serde_json::json!({"success":true,"request_id":"job"})),
+                            )
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/marker/job",
+                get(move |headers: HeaderMap| {
+                    let seen = poll_seen.clone();
+                    async move {
+                        let key = headers["x-api-key"].to_str().unwrap().to_string();
+                        seen.lock().unwrap().push(format!("poll:{key}"));
+                        Json(serde_json::json!({"status":"complete","markdown":"2 + 3 = 5"}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let service = DatalabOcrService {
+            client: Client::new(),
+            api_key: "primary".into(),
+            fallback_api_key: Some("backup".into()),
+            base_url,
+            mode: "accurate".into(),
+            output_format: "markdown".into(),
+            poll_interval: Duration::ZERO,
+            max_poll_attempts: 2,
+            max_submit_retries: 2,
+        };
+        let result = service.run_marker_for_file_url("https://example.com/test.pdf").await.unwrap();
+        assert_eq!(result.markdown.as_deref(), Some("2 + 3 = 5"));
+        assert_eq!(*seen.lock().unwrap(), vec!["submit:primary", "submit:backup", "poll:backup"]);
+        server.abort();
+    }
 }

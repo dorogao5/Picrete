@@ -13,3 +13,5 @@ pub(crate) mod task_bank_import;
 pub(crate) mod telegram_bot;
 pub(crate) mod work_processing;
 pub(crate) mod work_timing;
+
+pub(crate) mod practice;

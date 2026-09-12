@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use time::OffsetDateTime;
 
 use crate::core::config::Settings;
+use crate::services::assistant_chat::PublishedRuntimePolicy;
 
 const PRECHECK_SYSTEM_PROMPT: &str = r#"Вы — эксперт по химии и опытный преподаватель.
 Ваша задача — выполнить ПРЕДВАРИТЕЛЬНУЮ проверку решения студента по OCR-расшифровке.
@@ -65,11 +66,24 @@ pub(crate) struct AiGradingService {
     api_key: String,
     base_url: String,
     model: String,
-    max_tokens: u32,
 }
 
 impl AiGradingService {
     pub(crate) fn from_settings(settings: &Settings) -> Result<Self> {
+        Self::from_route(
+            settings,
+            settings.ai().openai_api_key.clone(),
+            settings.ai().openai_base_url.clone(),
+            settings.ai().ai_model.clone(),
+        )
+    }
+
+    fn from_route(
+        settings: &Settings,
+        api_key: String,
+        base_url: String,
+        model: String,
+    ) -> Result<Self> {
         let timeout = Duration::from_secs(settings.ai().ai_request_timeout);
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(30))
@@ -79,23 +93,43 @@ impl AiGradingService {
 
         Ok(Self {
             client,
-            api_key: settings.ai().openai_api_key.clone(),
-            base_url: settings.ai().openai_base_url.trim_end_matches('/').to_string(),
-            model: settings.ai().ai_model.clone(),
-            max_tokens: settings.ai().ai_max_tokens,
+            api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            model: super::assistant_chat::api_model_name(&model),
         })
     }
 
     pub(crate) fn for_snapshot(settings: &Settings, snapshot: &Value) -> Result<Self> {
-        validate_grading_snapshot(snapshot, &settings.ai().assistant_model)?;
-        let mut service = Self::from_settings(settings)?;
+        let policy: PublishedRuntimePolicy = serde_json::from_value(
+            snapshot.pointer("/assistant/runtime_policy").cloned().unwrap_or_else(|| json!({})),
+        )
+        .context("Published assistant has an invalid runtime_policy")?;
+        let model = if policy.is_legacy() || policy.decision_model_id.trim().is_empty() {
+            settings.ai().assistant_model.clone()
+        } else {
+            policy.decision_model_id.clone()
+        };
+        validate_grading_snapshot(snapshot, &model)?;
+        let (api_key, base_url) =
+            if policy.is_legacy() || policy.decision_provider_kind.trim().is_empty() {
+                (settings.ai().assistant_api_key.clone(), settings.ai().assistant_base_url.clone())
+            } else {
+                let route = settings
+                    .ai()
+                    .provider_route(policy.decision_provider_kind.trim())
+                    .with_context(|| {
+                        format!(
+                            "No runtime provider route configured for grader provider '{}'",
+                            policy.decision_provider_kind
+                        )
+                    })?;
+                (route.api_key.clone(), route.base_url.clone())
+            };
+        let mut service = Self::from_route(settings, api_key, base_url, model)?;
         service.client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(110))
             .build()?;
-        service.api_key = settings.ai().assistant_api_key.clone();
-        service.base_url = settings.ai().assistant_base_url.trim_end_matches('/').to_string();
-        service.model = settings.ai().assistant_model.clone();
         Ok(service)
     }
 
@@ -126,13 +160,10 @@ impl AiGradingService {
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            "max_completion_tokens": self.max_tokens,
             "response_format": {"type": "json_object"}
         });
 
         if self.model.to_ascii_lowercase().contains("deepseek") {
-            payload.as_object_mut().unwrap().remove("max_completion_tokens");
-            payload["max_tokens"] = json!(self.max_tokens);
             payload["thinking"] = json!({"type": "enabled"});
         }
 
@@ -242,6 +273,15 @@ impl AiGradingService {
 
 pub(crate) fn grading_enabled(snapshot: &Value) -> bool {
     snapshot.pointer("/assistant/grading_enabled").and_then(Value::as_bool) == Some(true)
+}
+
+pub(crate) fn snapshot_decision_model(snapshot: &Value, fallback: &str) -> String {
+    snapshot
+        .pointer("/assistant/runtime_policy/decision_model_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 pub(crate) fn validate_grading_snapshot(snapshot: &Value, model: &str) -> Result<()> {

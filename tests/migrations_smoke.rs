@@ -27,6 +27,10 @@ async fn migrations_apply_and_tables_exist() -> anyhow::Result<()> {
     migrator.run(&pool).await?;
 
     let tables = [
+        "course_trainers",
+        "practice_attempts",
+        "practice_jobs",
+        "practice_photos",
         "users",
         "exams",
         "task_types",

@@ -9,7 +9,7 @@ use crate::repositories;
 use crate::test_support;
 
 #[tokio::test]
-async fn private_trainer_set_keeps_answer_for_owner_self_check() {
+async fn private_trainer_set_requires_explicit_practice_reveal() {
     let ctx = test_support::setup_test_context().await;
     let teacher =
         test_support::insert_user(ctx.state.db(), "trainer_teacher", "Teacher", "teacher-pass")
@@ -104,5 +104,5 @@ async fn private_trainer_set_keeps_answer_for_owner_self_check() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = test_support::read_json(response).await;
     assert_eq!(body["items"][0]["has_answer"], true);
-    assert_eq!(body["items"][0]["answer"], "42 mol");
+    assert!(body["items"][0]["answer"].is_null());
 }

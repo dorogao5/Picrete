@@ -15,7 +15,11 @@ pub(crate) async fn run(state: AppState) -> Result<()> {
     let datalab = DatalabOcrService::from_settings(state.settings())?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let mut handles = Vec::with_capacity(OCR_WORKER_CONCURRENCY + LLM_WORKER_CONCURRENCY + 3);
+    let mut handles = Vec::with_capacity(OCR_WORKER_CONCURRENCY + LLM_WORKER_CONCURRENCY + 5);
+    for _ in 0..2 {
+        handles
+            .push(tokio::spawn(crate::services::practice::run(state.clone(), shutdown_rx.clone())));
+    }
 
     for _ in 0..OCR_WORKER_CONCURRENCY {
         handles.push(tokio::spawn(ocr_worker(state.clone(), datalab.clone(), shutdown_rx.clone())));

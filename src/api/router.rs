@@ -53,6 +53,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .nest("/courses/:course_id/submissions", submissions::router())
         .nest("/courses/:course_id/task-bank", task_bank::router())
         .nest("/courses/:course_id/trainer", trainer::router())
+        .nest("/courses/:course_id/practice", crate::api::practice::router())
         .nest("/courses/:course_id/materials", materials::router())
         .nest("/courses/:course_id/assistant", assistant::router())
         .nest("/internal/studio", assistant::internal_router())

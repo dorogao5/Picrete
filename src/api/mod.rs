@@ -17,3 +17,5 @@ pub(crate) mod validation;
 pub(crate) mod itmo;
 
 mod studio_grading;
+
+pub(crate) mod practice;

@@ -327,7 +327,7 @@ fn sanitized_filename(name: &str) -> String {
 
 /// Разворачивает JPEG по EXIF Orientation и стирает метаданные перекодированием.
 /// При любой ошибке возвращает исходные байты — загрузка важнее нормализации.
-fn normalize_jpeg_orientation(file_bytes: Vec<u8>, mime_type: &str) -> Vec<u8> {
+pub(crate) fn normalize_jpeg_orientation(file_bytes: Vec<u8>, mime_type: &str) -> Vec<u8> {
     if mime_type != "image/jpeg" {
         return file_bytes;
     }

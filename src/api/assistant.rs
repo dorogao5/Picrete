@@ -130,13 +130,38 @@ async fn publish_snapshot(
     {
         return Err(ApiError::UnprocessableEntity("Некорректный снимок ассистента".to_string()));
     }
-    if let Err(error) = payload
-        .assistant
-        .runtime_policy
-        .validate_configured_model(&state.settings().ai().assistant_model)
-    {
+    let tutor_model = if payload.assistant.runtime_policy.is_legacy() {
+        state.settings().ai().assistant_model.clone()
+    } else {
+        payload.assistant.runtime_policy.tutor_model_id.clone()
+    };
+    if let Err(error) = payload.assistant.runtime_policy.validate_configured_model(&tutor_model) {
         return Err(ApiError::UnprocessableEntity(format!(
             "Политика модели ассистента несовместима с Picrete: {error}"
+        )));
+    }
+    if !payload.assistant.runtime_policy.tutor_provider_kind.trim().is_empty()
+        && state
+            .settings()
+            .ai()
+            .provider_route(payload.assistant.runtime_policy.tutor_provider_kind.trim())
+            .is_none()
+    {
+        return Err(ApiError::UnprocessableEntity(format!(
+            "Не настроен маршрут провайдера ассистента: {}",
+            payload.assistant.runtime_policy.tutor_provider_kind
+        )));
+    }
+    if !payload.assistant.runtime_policy.decision_provider_kind.trim().is_empty()
+        && state
+            .settings()
+            .ai()
+            .provider_route(payload.assistant.runtime_policy.decision_provider_kind.trim())
+            .is_none()
+    {
+        return Err(ApiError::UnprocessableEntity(format!(
+            "Не настроен маршрут провайдера проверки: {}",
+            payload.assistant.runtime_policy.decision_provider_kind
         )));
     }
     if payload.assistant.runtime_policy.is_legacy() {
@@ -151,7 +176,10 @@ async fn publish_snapshot(
     if crate::services::ai_grading::grading_enabled(&snapshot) {
         crate::services::ai_grading::validate_grading_snapshot(
             &snapshot,
-            &state.settings().ai().assistant_model,
+            &crate::services::ai_grading::snapshot_decision_model(
+                &snapshot,
+                &state.settings().ai().assistant_model,
+            ),
         )
         .map_err(|e| ApiError::UnprocessableEntity(e.to_string()))?;
     }
@@ -298,8 +326,6 @@ async fn chat(
 
     let _capacity =
         acquire_chat_capacity(state.assistant_chat_capacity(), CHAT_CAPACITY_WAIT).await?;
-    let service = AssistantChatService::from_settings(state.settings())
-        .map_err(|e| ApiError::internal(e, "Failed to initialize course assistant"))?;
     let mut transaction = state
         .db()
         .begin()
@@ -335,6 +361,8 @@ async fn chat(
             .ok_or_else(|| {
                 ApiError::NotFound("Для курса ещё не опубликован ИИ-ассистент".to_string())
             })?;
+    let service = AssistantChatService::from_snapshot(state.settings(), &assistant.snapshot)
+        .map_err(|e| ApiError::internal(e, "Failed to initialize course assistant"))?;
     let existing = repositories::course_ai_assistants::find_thread_with_executor(
         &mut *transaction,
         &thread_id,
