@@ -81,6 +81,10 @@ pub(crate) struct AiSettings {
     pub(crate) assistant_request_timeout: u64,
     pub(crate) assistant_max_concurrent_requests: u32,
     pub(crate) ai_request_timeout: u64,
+    pub(crate) essential_tools_gateway_url: String,
+    pub(crate) essential_tools_gateway_token: String,
+    pub(crate) essential_tools_max_rounds: usize,
+    pub(crate) essential_tools_max_calls: usize,
     /// Credentials and OpenAI-compatible base URLs keyed by the provider kind
     /// stored in Studio's immutable assistant snapshot. The legacy fields
     /// above remain the fallback for snapshots published before per-assistant

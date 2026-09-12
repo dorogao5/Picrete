@@ -2,6 +2,7 @@ pub(crate) mod ai_grading;
 pub(crate) mod assistant_chat;
 pub(crate) mod content_integrity;
 pub(crate) mod datalab_ocr;
+pub(crate) mod essential_tools;
 pub(crate) mod grading_constraints;
 pub(crate) mod invite_codes;
 pub(crate) mod materials;

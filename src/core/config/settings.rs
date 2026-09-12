@@ -190,6 +190,18 @@ impl Settings {
                 password: redis_password,
             },
             ai: AiSettings {
+                essential_tools_gateway_url: std::env::var("ESSENTIAL_TOOLS_GATEWAY_URL")
+                    .unwrap_or_default(),
+                essential_tools_gateway_token: std::env::var("ESSENTIAL_TOOLS_GATEWAY_TOKEN")
+                    .unwrap_or_default(),
+                essential_tools_max_rounds: parse_u64(
+                    "ESSENTIAL_TOOLS_MAX_ROUNDS",
+                    env_or_default("ESSENTIAL_TOOLS_MAX_ROUNDS", "8"),
+                )? as usize,
+                essential_tools_max_calls: parse_u64(
+                    "ESSENTIAL_TOOLS_MAX_CALLS",
+                    env_or_default("ESSENTIAL_TOOLS_MAX_CALLS", "24"),
+                )? as usize,
                 openai_api_key,
                 openai_base_url,
                 ai_model,

@@ -67,6 +67,7 @@ pub(crate) struct AiGradingService {
     base_url: String,
     model: String,
     use_grading_schema: bool,
+    tool_gateway: Option<super::essential_tools::ToolGateway>,
 }
 
 impl AiGradingService {
@@ -98,6 +99,7 @@ impl AiGradingService {
             base_url: base_url.trim_end_matches('/').to_string(),
             model: super::assistant_chat::api_model_name(&model),
             use_grading_schema: false,
+            tool_gateway: None,
         })
     }
 
@@ -129,6 +131,10 @@ impl AiGradingService {
             };
         let mut service = Self::from_route(settings, api_key, base_url, model.clone())?;
         service.use_grading_schema = supports_grading_schema(&policy);
+        if policy.decision_tools_enabled {
+            service.tool_gateway =
+                Some(super::essential_tools::ToolGateway::from_settings(settings)?);
+        }
         if super::assistant_chat::provider_uses_full_model_uri(&policy.decision_provider_kind) {
             service.model = model;
         }
@@ -184,47 +190,59 @@ impl AiGradingService {
         let mut last_error = None;
         let mut body = Value::Null;
 
-        let retries = if request.snapshot.is_some() { 1 } else { 3 };
-        for attempt in 0..=retries {
-            let response =
-                self.client.post(&url).bearer_auth(&self.api_key).json(&payload).send().await;
+        if let Some(gateway) = self.tool_gateway.as_ref().filter(|_| request.snapshot.is_some()) {
+            body = super::essential_tools::complete(
+                &self.client,
+                &url,
+                &self.api_key,
+                payload.clone(),
+                gateway,
+            )
+            .await?;
+        } else {
+            let retries = if request.snapshot.is_some() { 1 } else { 3 };
+            for attempt in 0..=retries {
+                let response =
+                    self.client.post(&url).bearer_auth(&self.api_key).json(&payload).send().await;
 
-            match response {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let raw_body =
-                        resp.text().await.context("Failed to read OpenAI response body")?;
+                match response {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let raw_body =
+                            resp.text().await.context("Failed to read OpenAI response body")?;
 
-                    match serde_json::from_str::<Value>(&raw_body) {
-                        Ok(parsed) => {
-                            body = parsed;
-                            if status.is_success() {
-                                last_error = None;
-                                break;
+                        match serde_json::from_str::<Value>(&raw_body) {
+                            Ok(parsed) => {
+                                body = parsed;
+                                if status.is_success() {
+                                    last_error = None;
+                                    break;
+                                }
+                                last_error = Some(anyhow::anyhow!(
+                                    "OpenAI API error (status {status}): {raw_body}"
+                                ));
                             }
-                            last_error = Some(anyhow::anyhow!(
-                                "OpenAI API error (status {status}): {raw_body}"
-                            ));
-                        }
-                        Err(parse_err) => {
-                            last_error = Some(anyhow::anyhow!(
+                            Err(parse_err) => {
+                                last_error = Some(anyhow::anyhow!(
                                 "OpenAI API returned non-JSON response (status {status}): {parse_err}; body: {raw_body}"
                             ));
+                            }
                         }
                     }
+                    Err(err) => {
+                        last_error =
+                            Some(anyhow::anyhow!(err).context("Failed to call OpenAI API"));
+                    }
                 }
-                Err(err) => {
-                    last_error = Some(anyhow::anyhow!(err).context("Failed to call OpenAI API"));
+
+                if attempt < retries {
+                    tokio::time::sleep(Duration::from_secs(2_u64.pow(attempt as u32))).await;
                 }
             }
 
-            if attempt < retries {
-                tokio::time::sleep(Duration::from_secs(2_u64.pow(attempt as u32))).await;
+            if let Some(err) = last_error {
+                return Err(err);
             }
-        }
-
-        if let Some(err) = last_error {
-            return Err(err);
         }
 
         if schema_enabled {
@@ -693,6 +711,7 @@ mod contract_tests {
                 base_url: format!("http://{address}"),
                 model: model.into(),
                 use_grading_schema: use_schema,
+                tool_gateway: None,
             };
             let output = service
                 .run_precheck(LlmPrecheckRequest {
@@ -737,6 +756,59 @@ mod contract_tests {
         assert!(validate_criterion_identity(&result, &rubric).is_ok());
         result["criteria_scores"][1]["criterion_name"] = json!("Выдуманный критерий");
         assert!(validate_criterion_identity(&result, &rubric).is_err());
+    }
+
+    #[tokio::test]
+    async fn tool_enabled_grader_preserves_schema_validates_final_and_hides_traces() {
+        use crate::services::essential_tools::tests::{mock, success, tool_body};
+        for valid in [true, false] {
+            let rating = if valid {
+                json!({"unreadable":false,"needs_teacher_review":false,
+                "total_score":5,"max_score":5,"criteria_scores":[{"criterion_name":"Метод","score":5,"max_score":5,"comment":"Верно"}],"feedback":"Верно"})
+            } else {
+                json!({})
+            };
+            let fixture = mock(vec![tool_body("calculator", json!({"expression":"2+2"}), "calc"),
+                json!({"choices":[{"finish_reason":"stop","message":{"content":rating.to_string()}}],"usage":{"total_tokens":7}})],
+                axum::http::StatusCode::OK, success()).await;
+            let service = AiGradingService {
+                client: Client::new(),
+                api_key: "model-secret".into(),
+                base_url: fixture.url.clone(),
+                model: "published-qwen".into(),
+                use_grading_schema: true,
+                tool_gateway: Some(fixture.gateway.clone()),
+            };
+            let result = service
+                .run_precheck(LlmPrecheckRequest {
+                    submission_id: None,
+                    snapshot: Some(
+                        json!({"prompts":{"grader":{"system_prompt":"Grade with rubric"}}}),
+                    ),
+                    ocr_markdown_pages: vec!["2+2=4".into()],
+                    ocr_report_issues: vec![],
+                    report_summary: None,
+                    task_description: "Compute".into(),
+                    reference_solution: "4".into(),
+                    rubric: json!({"criteria":[{"criterion_name":"Метод","max_score":5}]}),
+                    max_score: 5.0,
+                    chemistry_rules: None,
+                })
+                .await;
+            if valid {
+                let result = result.unwrap();
+                assert_eq!(result["total_score"], 5);
+                assert_eq!(result["_metadata"]["tokens_used"], 30);
+                assert!(!result.to_string().contains("trace-1"));
+                assert!(result.get("_private_tool_metadata").is_none());
+            } else {
+                assert!(result.unwrap_err().to_string().contains("Missing total_score"));
+            }
+            let requests = fixture.model_requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0]["response_format"]["type"], "json_schema");
+            assert_eq!(requests[0]["response_format"], requests[1]["response_format"]);
+        }
     }
     #[test]
     fn flash_or_wrong_model_cannot_replace_published_grader() {

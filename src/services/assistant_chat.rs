@@ -21,6 +21,10 @@ pub(crate) struct PublishedRuntimePolicy {
     #[serde(default)]
     pub(crate) decision_supports_json_schema: bool,
     #[serde(default)]
+    pub(crate) tutor_tools_enabled: bool,
+    #[serde(default)]
+    pub(crate) decision_tools_enabled: bool,
+    #[serde(default)]
     pub(crate) tier: String,
     #[serde(default)]
     pub(crate) allowed_uses: Vec<String>,
@@ -34,6 +38,8 @@ impl PublishedRuntimePolicy {
             && self.tutor_provider_kind.trim().is_empty()
             && self.decision_provider_kind.trim().is_empty()
             && !self.decision_supports_json_schema
+            && !self.tutor_tools_enabled
+            && !self.decision_tools_enabled
             && self.tier.trim().is_empty()
             && self.allowed_uses.is_empty()
     }
@@ -82,6 +88,7 @@ pub(crate) struct AssistantChatService {
     base_url: String,
     model: String,
     request_model: String,
+    tool_gateway: Option<super::essential_tools::ToolGateway>,
 }
 
 impl AssistantChatService {
@@ -117,18 +124,20 @@ impl AssistantChatService {
             !route.base_url.trim().is_empty(),
             "Assistant provider route has an empty base URL"
         );
-        Self::from_route(
+        let mut service = Self::from_route(
             settings,
             route.api_key.clone(),
             route.base_url.clone(),
             policy.tutor_model_id.clone(),
-        )
-        .map(|mut service| {
-            if provider_uses_full_model_uri(&policy.tutor_provider_kind) {
-                service.request_model = policy.tutor_model_id.clone();
-            }
-            service
-        })
+        )?;
+        if provider_uses_full_model_uri(&policy.tutor_provider_kind) {
+            service.request_model = policy.tutor_model_id.clone();
+        }
+        if policy.tutor_tools_enabled {
+            service.tool_gateway =
+                Some(super::essential_tools::ToolGateway::from_settings(settings)?);
+        }
+        Ok(service)
     }
 
     fn from_route(
@@ -152,6 +161,7 @@ impl AssistantChatService {
             base_url: base_url.trim_end_matches('/').to_string(),
             request_model: api_model_name(&model),
             model,
+            tool_gateway: None,
         })
     }
 
@@ -202,6 +212,22 @@ impl AssistantChatService {
         messages
             .extend(history.iter().rev().take(12).cloned().collect::<Vec<_>>().into_iter().rev());
         let payload = build_payload(&self.request_model, messages);
+        if runtime_policy.tutor_tools_enabled {
+            let gateway = self.tool_gateway.as_ref().context("Tutor tools are not configured")?;
+            let body = super::essential_tools::complete(
+                &self.client,
+                &format!("{}/chat/completions", self.base_url),
+                &self.api_key,
+                payload,
+                gateway,
+            )
+            .await?;
+            return body
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .context("Assistant model returned an empty answer");
+        }
         let response = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
@@ -494,6 +520,8 @@ mod tests {
             tutor_provider_kind: String::new(),
             decision_provider_kind: String::new(),
             decision_supports_json_schema: false,
+            tutor_tools_enabled: false,
+            decision_tools_enabled: false,
             tier: "decision".to_string(),
             allowed_uses: vec!["student_tutor".to_string(), "grading".to_string()],
         };
@@ -510,6 +538,8 @@ mod tests {
             tutor_provider_kind: String::new(),
             decision_provider_kind: String::new(),
             decision_supports_json_schema: false,
+            tutor_tools_enabled: false,
+            decision_tools_enabled: false,
             tier: "decision".to_string(),
             allowed_uses: vec!["student_tutor".to_string()],
         };
@@ -528,5 +558,59 @@ mod tests {
 
         assert!(policy.is_legacy());
         assert!(policy.validate_configured_model("legacy-model").is_ok());
+        assert!(!policy.tutor_tools_enabled);
+        assert!(!policy.decision_tools_enabled);
+        let opted_in: PublishedRuntimePolicy = serde_json::from_value(
+            serde_json::json!({"tutor_tools_enabled":true,"decision_tools_enabled":true}),
+        )
+        .unwrap();
+        let serialized = serde_json::to_value(opted_in).unwrap();
+        assert_eq!(serialized["tutor_tools_enabled"], true);
+        assert_eq!(serialized["decision_tools_enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn tutor_tools_are_role_scoped_and_return_only_final_text() {
+        use crate::services::essential_tools::tests::{mock, success, tool_body};
+        for enabled in [false, true] {
+            let final_response = serde_json::json!({"choices":[{"finish_reason":"stop","message":{"content":"Начните с записи исходных данных."}}]});
+            let responses = if enabled {
+                vec![
+                    tool_body("calculator", serde_json::json!({"expression":"2+2"}), "calc"),
+                    final_response,
+                ]
+            } else {
+                vec![final_response]
+            };
+            let fixture = mock(responses, axum::http::StatusCode::OK, success()).await;
+            let service = super::AssistantChatService {
+                client: reqwest::Client::new(),
+                api_key: "model-secret".into(),
+                base_url: fixture.url.clone(),
+                model: "published-qwen".into(),
+                request_model: "published-qwen".into(),
+                tool_gateway: enabled.then(|| fixture.gateway.clone()),
+            };
+            let snapshot = serde_json::json!({"assistant":{"runtime_policy":{"policy_version":"test","tier":"decision","tutor_model_id":"published-qwen","decision_model_id":"published-qwen","allowed_uses":["student_tutor"],"tutor_tools_enabled":enabled,"decision_tools_enabled":true}},"prompts":{"tutor":{"system_prompt":"Help step by step"}}});
+            let answer = service
+                .reply_with_context(
+                    &snapshot,
+                    &[serde_json::json!({"role":"user","content":"Помогите начать"})],
+                    Some(
+                        &serde_json::json!({"task":{"text":"Test","solution":"PRIVATE REFERENCE"}}),
+                    ),
+                )
+                .await
+                .unwrap();
+            assert_eq!(answer, "Начните с записи исходных данных.");
+            let requests = fixture.model_requests.lock().unwrap();
+            assert_eq!(requests.len(), if enabled { 2 } else { 1 });
+            assert_eq!(requests[0].get("tools").is_some(), enabled);
+            assert!(requests[0]["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Не выдавайте эталон целиком"));
+            assert_eq!(fixture.tool_requests.lock().unwrap().len(), usize::from(enabled));
+        }
     }
 }
